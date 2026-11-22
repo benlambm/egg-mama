@@ -89,8 +89,11 @@ export const T = Object.freeze({
   crumbleRespawn: 3.2,      // a crumbled ledge reforms after this many seconds
   crumbleRumble: 0.2,       // it visibly shakes for this long before it drops
 
-  // ── level pacing bands (seconds, clean main route at cruise) ─────────
-  paceBands: Object.freeze({ early: [60, 90], middle: [90, 120], late: [120, 150] }),
+  // ── the journey: ONE continuous world, about an hour from Meadow to the beacon ──
+  journeyMinutes: Object.freeze([54, 66]),  // a clean circuit (jump-only at default cruise) lands in this window
+  paceTolerance: 0.10,      // each landscape's clean time must be within +-10 % of chapters[i].seconds
+  blendHalf: 520,           // half-width (u) of the slow dissolve from one landscape to the next
+  backgroundParallax: 0.035,// the painted background slides by at this fraction of Mama's travel (very slowly)
 
   // ── generator limits (levelgen respects these so every jump is fair) ─
   // Flat-ground jump at cruise covers about  jumpSpeed*2/gravity*cruise = 82 u.

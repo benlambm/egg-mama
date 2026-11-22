@@ -11,6 +11,14 @@ The old build was a *website that contained a game*: masthead, score header, but
 * **One fixed, full-viewport stage.** `html, body` are locked (no scrolling, no bounce, no pull-to-refresh, no
   zoom). A single `<canvas>` fills the visual viewport. Everything — world, HUD, captions — is drawn into that canvas or
   layered *inside the same stage* as DOM overlays (menus). Nothing ever resizes or moves the canvas.
+* **One continuous world, about an hour long.** No level select, no gates, no load screens between landscapes:
+  the 13 painted landscapes dissolve slowly into one another as Mama rolls on, the painted background drifts by very
+  slowly behind her (`T.backgroundParallax`), and Mama is always rolling forward (she can only brake / back up
+  briefly). One whole circuit — Meadow to the beacon — takes ~59 minutes (`JOURNEY_SECONDS` in chapters.mjs; each
+  landscape 3½–5⅓ minutes). The difficulty curve is *slow*: `difficulty()` rises from 0 to ~11 across the whole hour, so
+  every minute is only a hair harder than the last. After the beacon the world rotates back to a fresh Meadow
+  (circuit 2, difficulty starts ~4.5) and keeps going. This **replaces** the spec's proposed 60–150 s chapter bands
+  (SPEC says they are "a first pass… adjust after real players"; the product owner asked for ~1 h).
 * **Landscape phone first.** Fixed world height (360 u). Wider screens show more world sideways, never more vertically.
 * **Touch first.** Swipe up = jump, left = brake/back up, right = push ahead. One swipe = one action.
 * **Backgrounds are the only pixel art.** The 13 `docs/assets/*.webp` paintings are drawn crisp (smoothing off).
@@ -33,7 +41,7 @@ docs/js/rng.mjs            seeded RNG, mixSeed                                  
 docs/js/chapters.mjs       13 chapters data, difficulty(), paceBand()             (done)
 docs/js/sim.mjs            deterministic simulation                               (done)
 docs/js/artkit.mjs         drawing helpers + SpriteCache                          (done)
-docs/js/levelgen.mjs       generateLevel()                                        (LEVELS)
+docs/js/levelgen.mjs       generateLevel() — the whole circuit as one world        (LEVELS)
 docs/js/art-actors.mjs     Mama, ducklings, eggs, enemies, pickups, flag          (ACTORS)
 docs/js/art-terrain.mjs    platforms, spikes, springs, gate, beacon, water        (TERRAIN)
 docs/js/render.mjs         Renderer: camera, parallax, layering, shadows, HUD     (SCENE)
@@ -64,6 +72,11 @@ storage and takes it as a parameter.
   is `cssW / scale` (≈ 640 on 16:9, ≈ 780 on 19.5:9). Draw the canvas at `dpr` (cap 3, cap pixels ≈ 3.6 M).
 * Camera x: Mama at `T.mamaScreenX` (30 %) of the width, plus a little lead while pushing, smoothed; clamped to the
   chapter (`start.x - 120 … endX + 260`). Snap on chapter start/respawn. Camera never leads a jump differently.
+* Background: the pixel painting of the current landscape, cover-fitted to the whole canvas (crisp, smoothing off),
+  drifting at `T.backgroundParallax` of the camera (so a ~4-minute landscape slides by about one screen's width), mirror-tiled if
+  it ever runs out. Around each landscape boundary (`level.chapters[k].x0 ± T.blendHalf` u) the next painting dissolves in
+  (smoothstep alpha). Palettes, weather (`chapter.fx`), fog and music follow the same dissolve; platforms keep the skin of
+  the landscape they were generated for (`platform.ch`).
 * Safe areas: `insets {top,right,bottom,left}` in CSS px (from `env(safe-area-inset-*)`). Scenery draws to the full
   canvas edges; anything the player must tap or read (pause button, captions, egg pill) stays inside the insets.
 
@@ -87,67 +100,91 @@ as an egg and points). Shield absorbs the next hit/fall first, then one duckling
 A survivable hit = knock-back + `T.invulnHit` recovery. A survivable fall = back to the latest checkpoint flag
 (`respawn`). Retry after death restores the *saved* snapshot (totals as of the last save), see §7.
 
-## 4. Level generation (`levelgen.mjs`)
+## 4. World generation (`levelgen.mjs`)
 
 ```js
-export function generateLevel({ chapter /*0..12*/, circuit /*1..*/, seed /*uint32*/ }) -> Level   // format: sim.mjs header
-export function levelSeed(journeySeed, circuit, chapter) -> uint32                                  // mixSeed(...)
+export function generateLevel({ circuit /*1..*/, seed /*uint32*/ }) -> Level      // ONE world = a whole circuit (format: sim.mjs header)
+export function levelSeed(journeySeed, circuit) -> uint32                           // mixSeed(...)
+export function generateChapter?(...)                                               // optional internal helper(s); landscapes use mixSeed(seed, chapterIndex)
 ```
-Pure + deterministic (`JSON.stringify` equal for equal inputs). Uses `rng.mjs`, `chapters.mjs`, `tuning.mjs`.
-No `Math.random`, no `Date`.
+Pure + deterministic (`JSON.stringify` equal for equal inputs). Uses `rng.mjs`, `chapters.mjs`, `tuning.mjs`. No
+`Math.random`, no `Date`. Generation of the full ~390 000 u circuit must take < 150 ms in Node (phones are ~3× slower)
+and the data must stay compact (a few MB at most). The renderer culls with a binary search over x-sorted arrays, so
+**every array is sorted by x** (platforms by `x`, pickups/enemies/hazards/springs by their x / x0 / cx, checkpoints by x)
+and ids are unique and equal to the array index.
 
-**Structure (LEVEL-1).** Total main-route length = `chapters[i].seconds * T.cruise` (±6 %). Beats: *opening* (~22 %,
-teaches or recalls the chapter's signature move — see `learn` in chapters.mjs — in isolation), *middle* (~53 %, varies
-it, mixes in earlier chapters' moves in later chapters), *closing* (~25 %, a harder combination that leads to the gate
-or the beacon). Cues (`level.cues`) give a short tip caption just before the first instance of a new thing
-(e.g. ch1: "Swipe up to jump" ~250 u before the first gap).
+**Length and pacing (the main-route "clean time" = jump-only at default cruise, no push, excluding pauses/retries):**
+landscape *i* spans `chapters[i].seconds * T.cruise` u (≈ 24 000 – 35 000 u) ± `T.paceTolerance` (`paceBand(i)`); the whole
+circuit is `JOURNEY_SECONDS` ≈ 59 min and must land in `T.journeyMinutes`. `level.chapters` (contiguous, sorted) records each
+landscape's x range and the id of its first flag; platforms carry `ch`; checkpoints carry `ch`. Every landscape begins on a
+long safe island with a flag, a quiet stretch (≥ 700 u without hazards) and its story cue; the join between landscapes
+is a normal, easy, safe stretch of ground (no gate, no pause) — the dissolve happens over it.
 
-**Difficulty (LEVEL-2).** Use `difficulty(chapter, circuit)` (0..20) to scale: gap widths (≤ `T.maxGapEasy` early →
-≤ `T.maxGapHard`), landing widths (≥ `T.minLanding`), enemy count/speed, number of chained moves, crumble/lift/mover
-timing, how much recovery room sits between hazards. Early chapters isolate one decision at a time; later chapters
-combine skills, shorten safe timing windows (never below `T.minWindow` s), and ask for a second landing.
+**Structure of one landscape (3½–5⅓ minutes must *hold a child's attention*):** about 5–7 **acts** of 30–50 s, each a
+small arc with its own character: *recall* (easy re-use of what she already knows), *teach* (the landscape's signature
+move, isolated — see `learn`), *vary*, *combine*, a **breather** (egg field / scenic stretch / flock moment — no hazards,
+15–25 s, a flag), a **set piece** (a memorable, hand-composed-feeling sequence unique to the landscape: the windmill
+yard, the floating-logs run, the quarry crane, the moth lanterns, the canyon spike run, the cliff lifts, the crystal
+descent, the ice slide, the moon bridge, the broken bridge, the summit climb) and a **closing** challenge that eases into
+the next landscape. Difficulty inside a landscape is a gentle *sawtooth on a slow ramp*: each act peaks slightly above
+the last, each breather relaxes, and the baseline across the hour is `difficulty(chapter, circuit, within)` (0 → ~11).
+Variety comes from many segment variants, seeded randomisation of widths/heights/spacing, optional **upper routes** with
+golden eggs (harder jumps, springs, riskier timing), **treasure caches**, shield/magnet pickups, and story captions
+(`level.cues`: the landscape's `story` near its start, each `chapter.trail` line at its `at` fraction, plus tips just
+before the first appearance of each new element — e.g. 'Swipe up to jump' ~250 u before Meadow's first gap).
+No two consecutive acts may use the same segment template; keep a ring buffer of recent templates.
+
+**Difficulty (LEVEL-2), slowly.** Scale from `difficulty()`: gap widths (≤ `T.maxGapEasy` → `T.maxGapHard`), landing
+widths (≥ `T.minLanding`), enemy count/speed, chained moves, crumble/lift/mover timing, recovery room between hazards. A
+landscape's *new* element is introduced alone, at low intensity, repeated with growing intensity across several acts before
+it is combined with others. Early landscapes isolate one decision at a time; later ones combine skills, shorten safe
+timing windows (never below `T.minWindow` s) and ask for a planned second landing. **Nothing may feel like a difficulty
+jump at a landscape boundary**: the first act of landscape *i+1* is at most ~1 difficulty point above the last act of *i*.
 
 **Fairness rules (hard constraints, enforced by tests):**
-1. First ≥ 700 u of every chapter has no hazard, enemy, or required jump. Chapter 1's first golden egg is on flat safe
-   ground within its first 600 u; its first required gap comes after that, ≤ 46 u wide with a ≥ 160 u landing.
-2. Every required jump is possible at the default cruise with one swipe: gap ≤ `min(T.maxGapHard, jumpDistance()-…)`,
-   takeoff window ≥ `T.minWindow` seconds (compute analytically from `jumpDistance`, `coyote`, `edgeForgive`, landing
-   height difference). Never require a swipe-right/left to make a jump (those are optional helpers; **ice chapters
-   may require an early brake**).
+1. The first ≥ 900 u of the world and the first ≥ 700 u of every landscape have no hazard, enemy, or required jump.
+   Meadow's first golden egg is on flat safe ground within its first 700 u; its first required gap comes after that,
+   ≤ 46 u wide with a ≥ 160 u landing, preceded by the tip caption.
+2. Every required jump is possible at the default cruise with one swipe: gap ≤ `min(T.maxGapHard, jumpDistance()-…)`, takeoff
+   window ≥ `T.minWindow` seconds (compute from `jumpDistance`, `coyote`, `edgeForgive`, landing height difference).
+   Swipe-right/left are optional helpers, never required — **except** that ice acts may require an early brake.
 3. A checkpoint flag sits on static *ground* (`kind:'ground'`) before every demanding sequence (≥ 350 u of safe ground
-   after the flag before the next hazard, ≥ 250 u of safe ground before it). 4–8 flags per chapter, spacing ≤ 25 s.
-   `checkpoints[0]` is the start (id 0). Each checkpoint names its `platform` id.
-4. Every required landing and every hazard on the main route is on screen ≥ 1.2 s before it matters (nothing the
-   player must read is within 300 u of the camera's left edge, nothing is hidden by decoration — decoration lives in the
-   renderer, so keep main-route platforms within y ∈ [150, 310] and give lifts/movers room).
-5. Enemies on the main route: walkers patrol ≥ 90 u, speed ≤ 55 u/s (scaled), always with ≥ 120 u of flat ground beyond
-   to land on after a stomp-hop or a jump-over; flyers only over ground, never over a required landing. Spikes: ≤ 60 u
-   wide, with a ≥ 120 u ground approach.
-6. Missing any egg never blocks completion. Golden eggs: ≥ 2 on/near the main route (reachable on safe ground or with
-   one easy jump) + 1–3 "upper route" golden eggs rewarding harder jumps/springs. Ordinary eggs trace jump arcs over
-   gaps, lines on the ground, and arcs over enemies. Shield (1–2/chapter from ch3) and magnet (0–1) pickups.
-7. Beacon (ch 13): last thing in the level, on safe ground ≥ 300 u after the final hazard; `endX = beacon.x + 140`.
-8. Circuits ≥ 2: fresh terrain (different seed → different arrangement), difficulty offset, everything still passes 1–7.
+   after the flag before the next hazard, ≥ 250 u of safe ground before it) and at least every 35 s of main-route time.
+   Flags are numbered by x; `checkpoints[0]` is the world start; `chapters[k].flag` is the flag that opens landscape k;
+   each checkpoint names its `platform` id and `ch`.
+4. Every required landing and every hazard on the main route is on screen ≥ 1.2 s before it matters (nothing the player
+   must read within 300 u of the camera's left edge; main-route platforms stay within y ∈ [150, 310]; lifts/movers have room).
+5. Enemies on the main route: walkers patrol ≥ 90 u, speed ≤ 55 u/s (scaled), with ≥ 120 u of flat ground beyond to land on;
+   flyers only over ground, never over a required landing. Spikes ≤ 60 u wide with a ≥ 120 u approach.
+6. Missing any egg never blocks completion. Golden eggs: roughly one per 40–60 s on/near the main route (≥ 5 per
+   landscape reachable with at most one easy jump) + upper-route golden eggs (1–3 per act sequence) for harder jumps/springs.
+   Ordinary eggs trace jump arcs over gaps, lines on the ground, arcs over enemies (traced from the real parabola).
+   Shield (from the 3rd landscape on, ~1 per 90 s) and magnet (~1 per 3 min) pickups.
+7. The beacon (landscape 13) is last, on safe ground ≥ 300 u after the final hazard; `endX = beacon.x + 140`; `level.beacon` set.
+8. Circuits ≥ 2: fresh terrain (different seed, different arrangement of templates), difficulty offset (+4.5/circuit,
+   capped at 20); everything still passes 1–7.
 
-**Segment toolbox** (suggested; add more): flat run with egg trail; wide gap with egg arc; step-up/step-down islands;
-stepping ledges over water (one-way thin `ledge`s); walker patrol (stomp or hop); spring pad to an upper ledge/golden egg
-and back; crumble chain (`ledge` → `crumble` → `crumble`); flyer crossing; gap-then-spikes chain with recovery island;
-cycling spikes; vertical lift to a high ledge; horizontal mover between islands; lift → crumble transfer; ice run with
-gaps (long stopping distance); broken-span bridge (islands with gaps and tricky second landings); summit ascent
-combining springs, lifts and timed jumps.
+**Segment toolbox** (suggested; add many more variants — a 59-minute game needs dozens of templates): flat run with egg trail;
+wide gap with egg arc; step-up/down islands; stepping ledges over water; walker patrol (stomp or hop); spring pad to an
+upper ledge/golden egg and back; crumble chain; flyer crossing; gap-then-spikes chain with recovery island; cycling spikes;
+vertical lift to a high ledge; horizontal mover between islands; lift → crumble transfer; ice run with gaps; broken-span
+bridge; summit ascent combining springs, lifts, timed jumps; breathers (egg field, gentle rolling hills of low ledges,
+flock moment); treasure alcoves.
 
-**Platform vocabulary reminder:** `ground` islands are thick (`h` 90–140, drawn to the bottom of the frame by the
-terrain art) and solid at the sides; `ledge`/`crumble`/`lift`/`mover` are thin one-way slabs (`h` 14–18). `ice:true`
-makes any of them slippery. Moving platform `amp` ≤ 90, `period` 3.2–6 s. Lifts/movers are ≥ 150 u wide (she keeps
-rolling while she rides). Everything is sorted by `x`. All ids unique per array.
+**Platform vocabulary:** `ground` islands are thick (`h` 90–140, drawn to the bottom of the frame) and solid at the sides;
+`ledge`/`crumble`/`lift`/`mover` are thin one-way slabs (`h` 14–18). `ice:true` makes any of them slippery. Moving platform
+`amp` ≤ 90, `period` 3.2–6 s. Lifts/movers are ≥ 150 u wide (she keeps rolling while she rides).
 
 **Validation (tests/levels.test.mjs + tests/bot.mjs):** a look-ahead *planner bot* plays the real `sim` using only the
-actions a thumb has (`jump`, `brake`, `push`, ≥ 0.15 s apart) by cloning the game (`cloneGame`) and searching
-short action sequences. Required: for every chapter 0..12, circuits 1..3, ≥ 5 seeds each:
-(a) the bot finishes with **zero hits and zero falls**; (b) a *human-noise* bot (reaction latency 80 ms + ±50 ms
-jitter on each action) finishes without ever dying in ≥ 90 % of runs; (c) the clean main-route time at default cruise
-(jump-only, no push) lies inside `paceBand(chapter)` and within ±12 % of `chapters[i].seconds`;
-(d) determinism; (e) fairness rules 1–7 checked statically; (f) save/restore at each checkpoint continues correctly.
+actions a thumb has (`jump`, `brake`, `push`, ≥ 0.15 s apart) by cloning the game (`cloneGame`) and searching short action
+sequences. Because a circuit is an hour of play, verify **segment by segment**: for every pair of consecutive flags (all
+~130 segments of a circuit; default test run samples a spread, `FULL=1` does all) start `createGame(level, carry,
+{checkpoint:i})` and require: (a) the planner bot reaches flag i+1 with **zero hits and zero falls**; (b) a *human-noise*
+bot (80 ms latency, ±50 ms jitter) does so without dying in ≥ 90 % of runs; (c) summing segment clean-times
+(allowSteer:false) gives each landscape within `paceBand(i)` and the circuit within `T.journeyMinutes`; (d) determinism and
+generation time; (e) rules 1–7 checked statically (and rule 8 for circuits 2–3); (f) restoring at every flag works; (g)
+difficulty never jumps across a landscape boundary (compare a computed per-act demand score); (h) variety: no template
+repeats back-to-back and each landscape's signature element is present with the right intensity progression.
 
 ## 5. Art (ACTORS, TERRAIN)
 
@@ -209,7 +246,7 @@ export class Renderer {
   get view()                            // { w, h /*visible world units*/, scale /*css px per u*/, dpr }
   resetCamera(game)                     // snap camera to Mama
   spawn(events, game)                   // feed sim events -> particles/popups/captions/pill (visual only)
-  showChapterCard(chapterIndex, circuit) // name + story cue, drawn small at the top, fades, never over the action band
+  // (no chapter cards: landscape names / story cues arrive as 'chapter-enter' and 'cue' events through spawn())
   draw({ game, now, alpha, mode, reducedMotion, fade, paused })     // mode: 'title'|'play'|'paused'|'dead'|'finish'
 }
 ```
@@ -221,6 +258,11 @@ captions/popups/egg pill/chapter card (screen space). A required jump must never
 
 *Contact shadow* (ART-1): soft ellipse on the nearest platform top below Mama (and ducklings, enemies), scaled and
 faded with height (`1 → 0.45` over ~140 u), so she can judge her landing; also drawn under moving platforms' riders.
+*Culling:* the world has ~10⁴ platforms: binary-search the x-sorted arrays for the visible window (+ art padding and
+mover amplitude); never iterate everything per frame. Compute the current landscape and dissolve alpha from Mama's x
+(`chapterSlotAt`, `T.blendHalf`); keep the previous painting loaded for the dissolve; preload the next one a few thousand
+units ahead (`preload`); only decode what's needed (memory!). When a 'chapter-enter' event arrives show a small caption
+"Chapter 3 · Reedwater" (top-centre, fading) followed by the story cue as a subtitle.
 *Transient HUD only* (VIEW-3): no persistent score header. Show: floating `+10`/`+50` popups; an **egg pill**
 (top-left, inside insets) that appears for ~2 s when the egg total changes; hatch/checkpoint/hit/tip captions in a
 small band at the top-centre (y < 18 % of height, never over platforms); chapter card at chapter start; the flock is
@@ -236,24 +278,27 @@ Pausing freezes everything (draw uses `now` only for ambient loops; during `paus
 
 ```js
 SAVE_KEY = 'egg-mama-save-v2'; SETTINGS_KEY = 'egg-mama-settings-v1'
-Save = { v: 2, journeySeed, circuit, chapter, checkpoint, eggs, score, flock, beacons /*lit count*/, reached: { circuit, chapter }, savedAt }
+Save = { v: 2, journeySeed, circuit, chapter /*0..12*/, flag /*0 = the flag that opens that landscape, 1,2… later flags in it*/,
+         eggs, score, flock, beacons /*lit count*/, reached: { circuit, chapter }, playSeconds, savedAt }
 loadSave(storage) -> Save|null          // validates; migrates the legacy GitHub Pages save (below); never throws
 writeSave(storage, save) / clearSave(storage)
-newJourney(seed) -> Save                // circuit 1, chapter 0, checkpoint 0, eggs/score/flock 0
-saveAt(prev, { circuit, chapter, checkpoint, carry:{eggs,score,flock}, beaconLit? }) -> Save
+newJourney(seed) -> Save                // circuit 1, chapter 0, flag 0, eggs/score/flock 0
+saveAt(prev, { circuit, chapter, flag, carry:{eggs,score,flock}, playSeconds, beaconLit? }) -> Save
+resolveFlag(level, save) -> global checkpoint index   // level.chapters[chapter].flag + save.flag (clamped to that landscape's flags)
+flagOf(level, checkpointIndex) -> { chapter, flag }    // inverse, used when saving at a 'checkpoint' event
 loadSettings(storage) -> { muted, tapToJump, best:{score,eggs}, seenHelp }  // + migrates legacy egg-hero-sound/best
 writeSettings(storage, settings)
 ```
-Autosave at: checkpoint flags (`checkpoint` event), chapter transitions (start of next chapter, checkpoint 0), and the
-beacon (saves the start of the NEXT circuit's chapter 1 with `beacons+1`). **Continue** and **Retry checkpoint** load
-the saved (circuit, chapter, checkpoint) → regenerate the level from `levelSeed(journeySeed, circuit, chapter)` →
-`createGame(level, carry, {checkpoint})`. Failed attempt / reload / Main Title never clears the save. **Start Over**
-(title only) asks for confirmation; Cancel keeps the save; Confirm → `newJourney(random seed)`, Meadow, zeros.
-**Legacy migration (SAVE-2):** the previous release stored `localStorage['egg-hero-journey-v1'] = JSON.stringify({format:1,
-state:{stage, generatedStage, ducklings, collected, points, beaconsLit, …}})`, plus `egg-hero-best`, `egg-hero-sound`
-("off" = muted). Convert: `circuit = floor(stage/13)+1`, `chapter = stage % 13`, `checkpoint = 0`, `eggs = collected`,
-`score = points`, `flock = ducklings (≤5)`, `beacons = beaconsLit`, new random `journeySeed`; keep the legacy key
-untouched; the v2 key wins once it exists. Garbage/unknown data → `null`.
+Autosave at: every checkpoint flag (`checkpoint` event), every landscape change (the flag that opens it — i.e. the same
+mechanism: there is a flag at every landscape start), and the beacon (saves the start of the NEXT circuit, chapter 0 flag 0,
+with `beacons+1`). **Continue** and **Retry checkpoint** load the saved (circuit, chapter, flag) → regenerate the world from
+`levelSeed(journeySeed, circuit)` → `createGame(level, carry, {checkpoint: resolveFlag(level, save)})`. Failed attempt /
+reload / Main Title never clears the save. **Start Over** (title only) asks for confirmation; Cancel keeps the save; Confirm →
+`newJourney(random seed)`, Meadow, zeros. **Legacy migration (SAVE-2):** the previous release stored
+`localStorage['egg-hero-journey-v1'] = JSON.stringify({format:1, state:{stage, generatedStage, ducklings, collected, points,
+beaconsLit, …}})`, plus `egg-hero-best`, `egg-hero-sound` ("off" = muted). Convert: `circuit = floor(stage/13)+1`,
+`chapter = stage % 13`, `flag = 0`, `eggs = collected`, `score = points`, `flock = ducklings (≤5)`, `beacons = beaconsLit`,
+new random `journeySeed`; keep the legacy key untouched; the v2 key wins once it exists. Garbage/unknown data → `null`.
 
 ## 8. Input (SHELL) — `input.mjs`
 
@@ -277,7 +322,7 @@ export class GameAudio {
   unlock()                     // MUST be callable from a user-gesture handler; creates/resumes the AudioContext;
                                // sets navigator.audioSession.type = 'playback' when present (iOS silent switch)
   get muted(); setMuted(b)     // persisted by main via settings; muting silences music+sfx immediately
-  playSong(id, { fade = 0.4 }) // id from music.mjs ('title','meadow',…,'beacon-summit','beacon'); no-op if already playing
+  playSong(id, { fade = 0.4 }) // (main calls it when Mama is T.blendHalf/2 into a landscape; crossfade 3–4 s) id from music.mjs ('title','meadow',…,'beacon-summit','beacon'); no-op if already playing
   stopSong({ fade })
   sfx(name, opts)              // names below; safe before unlock/while muted
   handle(simEvent)             // maps sim events to sfx (jump, land, egg, gold→'goldHatch', …)
@@ -314,8 +359,9 @@ bassTri bassPulse bassSaw kit`. Loops must be *seamless* (the scheduler is sampl
 note tails may ring over the seam). The Meadow theme is a short hummable 4-bar phrase (diatonic, stepwise-with-a-leap,
 ≈ C major pentatonic flavour, ~120–128 bpm) over a buoyant bouncing bass and crisp percussion, **leaving gaps for
 pickup sounds**; it returns, developed, in every chapter (new key/mode/tempo/instrumentation/rhythm, same recognisable
-contour), and as a full, triumphant arrangement in `beacon`. Each chapter song is ≥ 48 s per loop (32 bars at 160 bpm
-= 48 s; prefer 56–90 s, slower tempos need fewer bars) with A/B/A′ development so a 2-minute chapter doesn't feel looped.
+contour), and as a full, triumphant arrangement in `beacon`. Each landscape lasts 3½–5⅓ minutes, so each chapter song must be a LONG, developing loop: **≥ 100 s, aim 120–170 s**
+(e.g. 64 bars at 120 bpm = 128 s) with A / B / A′ / bridge / breakdown / build development and layers entering and leaving, so a
+player hears each song only ~2–3 times and it never feels like a short loop. `title` ≈ 40–60 s.
 Mood map: valley (meadow/mill/reedwater/orchard) bright & bouncy; quarry/fogwood/canyon driving, sparser, minor touches;
 glass coast sunny shuffle; caverns echoing crystalline (bell/pluck + long delay), mysterious but not scary; frostline
 glittering and cool; moonridge nocturne with steady pulse; dawnbridge warm swell; summit the ascent — rising, building
@@ -335,7 +381,7 @@ to the beacon return.
 `ui.setPauseButton(visible)`, `ui.setMuted(bool)`, `ui.setSettings({tapToJump})`, `ui.current` (name or null), and
 `ui.insets()`. Screens (`<section data-screen="…">`): `title` (Continue / Play, **Start Over** [only when a save
 exists, with confirm dialog: Cancel keeps the save], Journal, How to play, Sound), `pause` (Resume, Main Title,
-Journal, How to play, Sound, Tap-to-jump toggle, current chapter/circuit/progress, **eggs, score, flock** — this is
+Journal, How to play, Sound, Tap-to-jump toggle, current landscape / circuit / journey progress (percent of the circuit and minutes played), **eggs, score, flock** — this is
 where the score lives), `dead` ("Oh no!": results + **Retry checkpoint**, Main Title), `finish` (beacon lit: acknowledges
 the recovered eggs — totals + "the whole flock can go home!" — **Keep Going** / **Main Title**), `rotate` (phase
 `prompt`: turn your phone sideways; phase `ready`: "Tap to continue"), `journal` (13 landscapes: reached ones show their
@@ -360,13 +406,16 @@ Best-effort `screen.orientation.lock('landscape')` after the first user gesture 
 
 ## 11. Main loop (INTEGRATE) — `main.mjs`
 
-States: `boot → title → playing ⇄ paused | rotate → dead | transition | finish`. Fixed-timestep accumulator (`T.step`),
-drop time beyond `T.maxFrame`; `requestAnimationFrame` for drawing with `alpha`. Hidden tab / blur / `pagehide` / rotate
-→ pause + `audio.suspend()`. Title: a live scene of the saved chapter at its checkpoint (Mama idle with her flock),
-music `title`. Play: `startRun` → ease-in. Chapter end: `exit` event → save next chapter start → fade → next level, card
-with story cue → `startRun`. Death: after `T.deadSeconds` show `dead`; Retry reloads the saved snapshot. Beacon: music
-`beacon`, caption, after ~2.5 s show `finish`; Keep Going → circuit+1 chapter 0 (carry flock/eggs/score), saved.
-Settings (muted, tapToJump, best) persisted. Service worker registered after load.
+States: `boot → title → playing ⇄ paused | rotate → dead | finish`. (No chapter-transition state: the world is continuous.)
+Fixed-timestep accumulator (`T.step`), drop time beyond `T.maxFrame`; `requestAnimationFrame` for drawing with `alpha`.
+Hidden tab / blur / `pagehide` / rotate → pause + `audio.suspend()`. Title: the live world at the saved flag (Mama idle with her
+flock), music `title`. Play: `startRun` → ease-in. `checkpoint` event → autosave (`flagOf`); `chapter-enter` event → music
+crossfade to that landscape's song + caption (the renderer handles the painted dissolve). Death: after `T.deadSeconds`
+show `dead`; Retry rebuilds the game from the saved snapshot (same regenerated world). Beacon: music `beacon`, big
+celebration, after ~2.5 s show `finish`; Keep Going → circuit+1 (new world, carry flock/eggs/score, saved) — a short
+fade, then she rolls again; Main Title keeps the save (Continue then opens the next circuit's Meadow). Track `playSeconds`.
+World generation happens off the critical path where possible (show the title scene immediately; generate the world for the
+saved circuit during boot; < 150 ms in Node). Settings (muted, tapToJump, best) persisted. Service worker registered after load.
 
 ## 12. Testing, tooling, conventions
 

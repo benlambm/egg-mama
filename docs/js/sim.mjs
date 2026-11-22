@@ -9,12 +9,17 @@
  *   for (const e of drainEvents(game)) …  // audio, particles, saving, UI
  *
  * ── LEVEL FORMAT (produced by levelgen.mjs, consumed here) ───────────────
+ * A level is ONE CONTINUOUS WORLD: a whole circuit (all 13 landscapes, ~an hour) in one coordinate
+ * space, x growing to the right from `start.x` to the beacon. (Small hand-made test levels with a single
+ * landscape and a plain `endX` gate are also fine; `chapters` is then absent.)
  * y grows DOWN. A platform's (x, y) is its TOP-LEFT; Mama's (x, y) is her FEET.
  *   level = {
- *     chapter, circuit, seed,
+ *     circuit, seed, chapter (landscape index, single-landscape levels only),
+ *     chapters: [{ index (0..12), x0, x1, flag (id of its first checkpoint) }],  // contiguous, sorted by x0
+ *               landscape i is in force for x0 <= x < x1; art/audio dissolve across T.blendHalf around each x0
  *     start: { x, y },                     // feet position at chapter start (on platform 0)
  *     endX,                                // crossing the gate at endX completes the chapter
- *     platforms: [{ id, kind, x, y, w, h, solid?, ice?, motion?, crumble? }],
+ *     platforms: [{ id, kind, x, y, w, h, ch?, solid?, ice?, motion? }],     // ch = landscape index of this platform
  *        kind:  'ground'  long static island, drawn thick. `solid` (default true) = side faces block Mama.
  *               'ledge'   thin static one-way slab (jump up through it, land on top)
  *               'crumble' one-way slab that gives way T.crumbleDelay s after she lands
@@ -27,7 +32,7 @@
  *               |{ id, kind:'flyer', cx, cy, ax, ay, period, phase }]
  *     hazards:  [{ id, kind:'spikes', x, y, w, h?, cycle?:{ period, up, phase } }]   (y = ground top)
  *     springs:  [{ id, x, y, w? }]                                            (x = centre, y = ground top)
- *     checkpoints: [{ id, x, y, platform }]    id 0 is the chapter start; y = ground top under the flag
+ *     checkpoints: [{ id, x, y, platform, ch }]  id 0 is the very start; every landscape starts with a flag; y = ground top
  *     beacon:   null | { x, y }                (chapter 13 only; y = ground top)
  *     cues:     [{ x, text, kind:'tip' }]      captions shown when Mama passes x
  *     beats:    [{ kind:'opening'|'middle'|'closing', x0, x1, name }]
@@ -39,7 +44,7 @@
  *   hatch{x,y,flock}, shield{x,y}, shield-break{x,y}, magnet{x,y}, stomp{x,y,points},
  *   spring{x,y}, hit{source:'enemy'|'spikes'|'flyer'}, duckling-lost{x,y,flock},
  *   fall{x,y}, respawn{x,y}, checkpoint{index,x,y}, crumble-start{id}, crumble-fall{id},
- *   steer{dir}, cue{text,kind}, dead{}, exit{x,y}, beacon{x,y}
+ *   steer{dir}, cue{text,kind}, chapter-enter{slot,index}, dead{}, exit{x,y}, beacon{x,y}
  */
 import { T, clamp, smooth } from './tuning.mjs';
 
@@ -83,6 +88,20 @@ export function hazardWarn(h, t) {
   const wait = c.period - into;              // seconds until it rises
   return wait < 0.45 ? 1 - wait / 0.45 : 0;
 }
+
+/**
+ * Index into level.chapters of the landscape that owns x (binary search). Single-landscape levels
+ * (no `chapters`) always return 0.
+ */
+export function chapterSlotAt(level, x) {
+  const cs = level.chapters;
+  if (!cs || cs.length < 2) return 0;
+  let lo = 0, hi = cs.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (cs[mid].x0 <= x) lo = mid; else hi = mid - 1; }
+  return lo;
+}
+/** Landscape index 0..12 at x. */
+export const chapterIndexAt = (level, x) => (level.chapters && level.chapters.length ? level.chapters[chapterSlotAt(level, x)].index : level.chapter | 0);
 
 export const WALKER = Object.freeze({ w: 34, h: 26 });
 export const FLYER = Object.freeze({ w: 30, h: 24 });
@@ -152,7 +171,7 @@ export function createGame(level, carry = {}, opts = {}) {
     t: 0, status: 'ready', statusT: 0, events: [],
     eggs: carry.eggs | 0, score: carry.score | 0, flock: clamp(carry.flock | 0, 0, T.maxFlock),
     shield: false, magnet: 0,
-    checkpoint: cpIndex,
+    checkpoint: cpIndex, slot: chapterSlotAt(level, cp.x),
     platforms: level.platforms.map((p) => ({
       ...p, cx: p.x, cy: p.y, pcx: p.x, pcy: p.y, vx: 0, vy: 0, state: 'idle', st: 0, fallV: 0,
     })),
@@ -501,6 +520,13 @@ function checkWorld(game) {
   for (let i = game.checkpoint + 1; i < lvl.checkpoints.length; i++) {
     const c = lvl.checkpoints[i];
     if (m.x >= c.x) { game.checkpoint = i; emit(game, 'checkpoint', { index: i, x: c.x, y: c.y }); } else break;
+  }
+
+  // crossing into the next landscape (no gate, no pause: the world just keeps rolling)
+  const cs = lvl.chapters;
+  if (cs) while (game.slot + 1 < cs.length && m.x >= cs[game.slot + 1].x0) {
+    game.slot++;
+    emit(game, 'chapter-enter', { slot: game.slot, index: cs[game.slot].index });
   }
 
   // captions

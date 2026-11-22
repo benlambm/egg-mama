@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { T, jumpDistance } from "../docs/js/tuning.mjs";
-import { createGame, startRun, act, step, drainEvents, snapshotCarry } from "../docs/js/sim.mjs";
+import { createGame, startRun, act, step, drainEvents, snapshotCarry, chapterSlotAt, chapterIndexAt } from "../docs/js/sim.mjs";
 
 /** A tiny hand-built level: ground, a gap, ground, a golden egg, a flag, the gate. */
 function tiny(extra = {}) {
@@ -155,4 +155,21 @@ test("same inputs, same game (deterministic)", () => {
     return JSON.stringify([game.mama.x, game.mama.y, game.eggs, game.score, game.flock, game.status]);
   };
   assert.equal(play(), play());
+});
+
+test("one continuous world: crossing a landscape boundary just emits chapter-enter and keeps rolling", () => {
+  const level = tiny({ platforms: [{ id: 0, kind: "ground", x: 0, y: T.groundY, w: 4000, h: 120 }], pickups: [], checkpoints: [{ id: 0, x: 60, y: T.groundY, platform: 0, ch: 0 }],
+    chapters: [{ index: 0, x0: 0, x1: 300, flag: 0 }, { index: 1, x0: 300, x1: 600, flag: 0 }, { index: 2, x0: 600, x1: 4000, flag: 0 }], endX: 3900 });
+  assert.equal(chapterSlotAt(level, 10), 0);
+  assert.equal(chapterSlotAt(level, 300), 1);
+  assert.equal(chapterIndexAt(level, 1000), 2);
+  const game = createGame(level);
+  startRun(game);
+  const seen = [];
+  for (let i = 0; i < 8 / T.step; i++) { step(game, {}); for (const e of drainEvents(game)) if (e.type === "chapter-enter") seen.push(e.index); }
+  assert.deepEqual(seen, [1, 2]);
+  assert.equal(game.status, "running");
+  // restoring from the middle of the world starts in the right landscape and doesn't re-announce it
+  const later = createGame(level, {}, { checkpoint: 0 });
+  assert.equal(later.slot, 0);
 });
