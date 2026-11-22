@@ -2,6 +2,7 @@ import { advance, createRun, MAX_DUCKLINGS, restoreCheckpoint, runScore, saveChe
 import { CHAPTERS, chapterIndex, loopNumber } from "./chapters.mjs";
 import { ArcadeView, paintIcon } from "./art.mjs";
 import { ArcadeSound } from "./audio.mjs";
+import { SWIPE_JUMP_SECONDS, SWIPE_STEER_SECONDS, swipeDirection } from "./gestures.mjs";
 
 const byId = (id) => document.getElementById(id);
 const elements = Object.fromEntries([
@@ -46,12 +47,16 @@ let previousDistance = -1;
 
 const keys = new Set();
 const pointers = new Map();
+const swipes = new Map();
+let swipeSteer = null;
+let swipeSteerUntil = 0;
+let swipeJumpUntil = 0;
 const bindings = new Map([
   ["KeyA", "left"], ["ArrowLeft", "left"], ["KeyD", "right"], ["ArrowRight", "right"],
   ["Space", "jump"], ["KeyW", "jump"], ["ArrowUp", "jump"],
   ["ShiftLeft", "sprint"], ["ShiftRight", "sprint"],
 ]);
-const controls = { left: false, right: false, jump: false, sprint: false, jumpPressed: false };
+const controls = { left: false, right: false, jump: false, sprint: false, jumpPressed: false, autoRoll: true };
 elements.world.tabIndex = -1;
 
 function updateInput() {
@@ -59,6 +64,8 @@ function updateInput() {
   controls.left = controls.right = controls.jump = controls.sprint = false;
   for (const key of keys) controls[bindings.get(key)] = true;
   for (const input of pointers.values()) controls[input] = true;
+  if (swipeSteer && run?.time < swipeSteerUntil && !controls.left && !controls.right) controls[swipeSteer] = true;
+  if (run?.time < swipeJumpUntil) controls.jump = true;
   if (controls.jump && !previousJump) controls.jumpPressed = true;
   for (const button of touchButtons) button.classList.toggle("pressed", Array.from(pointers.values()).includes(button.dataset.input));
 }
@@ -66,6 +73,10 @@ function updateInput() {
 function clearInput() {
   keys.clear();
   pointers.clear();
+  swipes.clear();
+  swipeSteer = null;
+  swipeSteerUntil = 0;
+  swipeJumpUntil = 0;
   controls.jumpPressed = false;
   updateInput();
 }
@@ -212,6 +223,7 @@ function startGame(reset = false) {
 function goHome() {
   storeBest();
   clearInput();
+  audio.pauseMusic();
   run = null;
   mode = "intro";
   view.reset();
@@ -224,6 +236,7 @@ function goHome() {
 function pauseGame(setFocus = true) {
   if (mode !== "playing") return;
   clearInput();
+  audio.pauseMusic();
   mode = "paused";
   storeBest();
   showMode();
@@ -242,6 +255,7 @@ function endGame() {
   refreshHud();
   storeBest();
   clearInput();
+  audio.pauseMusic();
   mode = "over";
   elements["new-record"].hidden = bestAtStart >= runScore(run);
   elements["result-score"].textContent = runScore(run).toLocaleString();
@@ -253,6 +267,7 @@ function endGame() {
 
 function finishCircuit() {
   clearInput();
+  audio.pauseMusic();
   storeBest();
   mode = "finish";
   chapterUntil = 0;
@@ -425,6 +440,33 @@ for (const button of touchButtons) {
   button.addEventListener("contextmenu", (event) => event.preventDefault());
 }
 
+elements.world.addEventListener("pointerdown", (event) => {
+  if (mode !== "playing" || panel || event.button !== 0) return;
+  event.preventDefault();
+  elements.world.setPointerCapture(event.pointerId);
+  swipes.set(event.pointerId, { x: event.clientX, y: event.clientY });
+});
+
+elements.world.addEventListener("pointermove", (event) => {
+  const start = swipes.get(event.pointerId);
+  if (!start) return;
+  const direction = swipeDirection(event.clientX - start.x, event.clientY - start.y, elements.viewport.clientHeight);
+  if (!direction) return;
+  swipes.delete(event.pointerId);
+  if (direction === "jump") {
+    swipeJumpUntil = run.time + SWIPE_JUMP_SECONDS;
+    controls.jumpPressed = true;
+  } else {
+    swipeSteer = direction;
+    swipeSteerUntil = run.time + SWIPE_STEER_SECONDS;
+  }
+  updateInput();
+});
+
+for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
+  elements.world.addEventListener(type, (event) => swipes.delete(event.pointerId));
+}
+
 window.addEventListener("keydown", (event) => {
   const code = event.code;
   if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -480,6 +522,14 @@ function frame(now) {
   const elapsed = Math.min((now - previous) / 1000, 0.05);
   previous = now;
   if (mode === "playing") {
+    if (swipeJumpUntil && run.time >= swipeJumpUntil) {
+      swipeJumpUntil = 0;
+      updateInput();
+    }
+    if (swipeSteer && run.time >= swipeSteerUntil) {
+      swipeSteer = null;
+      updateInput();
+    }
     accumulator += elapsed;
     while (accumulator >= STEP && !run.over) {
       advance(run, controls, STEP, view.width);
@@ -499,7 +549,7 @@ function frame(now) {
     run.events.length = 0;
     if (run.over) endGame();
     else if (completed) finishCircuit();
-    else audio.music();
+    else audio.music(run.stage);
     refreshHud();
   }
   if (mode === "intro") view.attract(now / 1000, compact.matches || view.width < 270);

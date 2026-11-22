@@ -5,6 +5,8 @@ export const FLOOR = 246;
 export const STEP = 1 / 120;
 export const WALK = 151;
 export const SPRINT = 218;
+export const ROLL_SPEED = 67;
+const JUMP_APPROACH = 125;
 export const GRAVITY = 795;
 export const JUMP = 301;
 export const START = 43;
@@ -57,7 +59,7 @@ function flag(run, tile, offset = 36) {
 function playerAt(x, y, tile, invulnerability = 0) {
   return {
     x, y, vx: 0, vy: 0, face: 1, width: 15, height: 22, ground: tile,
-    coyote: 0, jumpBuffer: 0, jumping: false, invulnerability, stride: 0,
+    coyote: 0, jumpBuffer: 0, jumping: false, invulnerability, stride: 0, roll: 0,
   };
 }
 
@@ -373,6 +375,7 @@ function hitEnemies(run, previousFeet) {
 
 function movePlayer(run, controls, elapsed) {
   const p = run.player;
+  const previousX = p.x;
   const halfWidth = p.width / 2;
   const move = Number(controls.right) - Number(controls.left);
   const maxSpeed = controls.sprint ? SPRINT : WALK;
@@ -398,12 +401,19 @@ function movePlayer(run, controls, elapsed) {
   if (move) {
     p.face = move;
     p.vx += clamp(move * maxSpeed - p.vx, -acceleration * elapsed, acceleration * elapsed);
+  } else if (controls.autoRoll) {
+    const speed = p.jumping ? WALK : controls.sprint ? SPRINT : ROLL_SPEED;
+    const ease = onIce ? 195 : 355;
+    p.vx += clamp(speed - p.vx, -ease * elapsed, ease * elapsed);
+    if (Math.abs(p.vx) > 12) p.face = Math.sign(p.vx);
   } else {
     p.vx += clamp(-p.vx, -friction * elapsed, friction * elapsed);
   }
 
   if (p.jumpBuffer > 0 && p.coyote > 0) {
     p.vy = -JUMP;
+    // Carry a tap or swipe far enough to clear a gap at the gentle default pace.
+    if (controls.autoRoll && move >= 0 && p.vx >= 0) p.vx = Math.max(p.vx, JUMP_APPROACH);
     p.ground = null;
     p.coyote = 0;
     p.jumpBuffer = 0;
@@ -455,7 +465,9 @@ function movePlayer(run, controls, elapsed) {
     }
   }
 
-  p.stride += Math.abs(p.vx) * elapsed * 0.063;
+  const displacement = p.x - previousX;
+  p.stride += Math.abs(displacement) * 0.063;
+  p.roll = (p.roll + displacement / 30) % (Math.PI * 2);
   if (p.y > HEIGHT + 35) hit(run, p.x, true);
 }
 

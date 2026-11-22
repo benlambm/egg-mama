@@ -30,6 +30,8 @@
       </div>
     </header>
 
+    <div class="rotate-tip"><span class="phone-icon" aria-hidden="true"></span><span>Rotate your phone for a wider view.</span></div>
+
     <section class="cabinet" aria-label="Egg Mama arcade game">
       <header class="hud">
         <div class="hud-left">
@@ -50,7 +52,7 @@
       </header>
 
       <div class="viewport" id="viewport">
-        <canvas id="world" width="600" height="288" role="img" aria-label="An egg mother and her flock in a pixel-art landscape"></canvas>
+        <canvas id="world" width="600" height="288" role="img" aria-label="Egg Mama game field. Swipe up to jump or swipe sideways to steer."></canvas>
         <div class="chapter-story" id="chapter-story" role="status" hidden>
           <span id="story-kicker" class="mode"></span>
           <strong id="story-name"></strong>
@@ -64,6 +66,7 @@
             <span class="mode"><i aria-hidden="true"></i> Endless arcade</span>
             <h1 id="game-title" class="arcade-title"><span>EGG</span><span>MAMA</span></h1>
             <p>A storm scattered the clutch. Follow the egg trail and light the beacon to bring the flock home.</p>
+            <p class="gesture-brief">Mama rolls forward. Swipe up to jump and sideways to steer.</p>
             <div class="title-actions">
               <button class="primary-button" id="play" type="button"><canvas width="16" height="16" data-icon="play-dark" aria-hidden="true"></canvas><span id="play-label">Start journey</span></button>
               <button class="secondary-button" id="start-over" type="button" hidden>Start over</button>
@@ -121,8 +124,8 @@
               <div><canvas width="16" height="16" data-icon="magnet" aria-hidden="true"></canvas><p><strong>Magnet</strong><span>Pulls nearby eggs to you.</span></p></div>
               <div><canvas width="16" height="16" data-icon="duckling" aria-hidden="true"></canvas><p><strong>Flock</strong><span>Up to five ducklings can follow you.</span></p></div>
             </div>
-            <p class="help-keys">Move with A / D or the arrow keys. Hold Space to jump higher, Shift to sprint, and press P to pause.</p>
-            <p class="help-touch">Hold a direction to move and hold Jump to jump higher.</p>
+            <p class="help-keys">Mama rolls forward on her own. Steer with A / D or the arrow keys, hold Space to jump higher, and press P to pause.</p>
+            <p class="help-touch">Mama rolls forward on her own. Swipe anywhere on the game field. Swipe up to jump, left to back up, or right to speed up. You can also use the buttons.</p>
           </div>
         </section>
         <section class="overlay" id="journal" aria-labelledby="journal-title" hidden>
@@ -148,16 +151,17 @@
 
       <footer class="control-bar">
         <div class="desktop-keys" aria-label="Keyboard controls">
-          <div class="key-group"><div class="key-stack"><kbd>A</kbd><kbd>D</kbd></div><span>Move</span></div>
+          <div class="key-group"><div class="key-stack"><kbd>A</kbd><kbd>D</kbd></div><span>Steer</span></div>
           <div class="key-group"><kbd class="wide-key">Space</kbd><span>Jump</span></div>
           <div class="key-group"><kbd class="wide-key">Shift</kbd><span>Sprint</span></div>
           <div class="key-group pause-key"><kbd>P</kbd><span>Pause</span></div>
         </div>
         <div class="touch-keys" aria-label="Touch controls">
           <div class="touch-direction">
-            <button class="touch-button" type="button" data-input="left" aria-label="Move left"><span aria-hidden="true">◀</span></button>
-            <button class="touch-button" type="button" data-input="right" aria-label="Move right"><span aria-hidden="true">▶</span></button>
+            <button class="touch-button" type="button" data-input="left" aria-label="Roll left"><span aria-hidden="true">◀</span></button>
+            <button class="touch-button" type="button" data-input="right" aria-label="Roll right"><span aria-hidden="true">▶</span></button>
           </div>
+          <span class="swipe-hint">Swipe up to jump<br>Swipe left or right to steer</span>
           <button class="touch-button touch-jump" type="button" data-input="jump">Jump</button>
         </div>
         <div class="footer-actions">

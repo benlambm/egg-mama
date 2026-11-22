@@ -145,12 +145,18 @@ mamaSprite.width = 34;
 mamaSprite.height = 30;
 const mamaContext = mamaSprite.getContext("2d");
 
-function drawMama(ctx, x, y, scale, face, time, stride = 0, airborne = false) {
+function drawMama(ctx, x, y, scale, face, time, stride = 0, airborne = false, angle = 0) {
   mamaContext.clearRect(0, 0, mamaSprite.width, mamaSprite.height);
   paintMama(mamaContext, time, stride, airborne);
   ctx.save();
   ctx.imageSmoothingEnabled = false;
   ctx.translate(Math.round(x), Math.round(y));
+  if (angle) {
+    const pivot = Math.round(12 * scale);
+    ctx.translate(0, -pivot - Math.round(Math.abs(angle) * 3));
+    ctx.rotate(angle);
+    ctx.translate(0, pivot);
+  }
   ctx.scale(face, 1);
   ctx.drawImage(mamaSprite, -Math.round(20 * scale), -Math.round(28 * scale), Math.round(mamaSprite.width * scale), Math.round(mamaSprite.height * scale));
   ctx.restore();
@@ -530,7 +536,7 @@ export class ArcadeView {
     rect(ctx, "#162238", mamaX - 19, mamaY - 2, 39, 3);
     ctx.globalAlpha = 1;
     for (let i = 2; i >= 1; i--) duckling(ctx, mamaX - (mobile ? 22 : 29) - i * (mobile ? 13 : 17), mamaY, 1, drawTime + i * 0.1, false, mobile ? 1.3 : 1.65);
-    drawMama(ctx, mamaX, mamaY - 1 + bob, mobile ? 1.98 : 2.55, 1, drawTime);
+    drawMama(ctx, mamaX, mamaY - 1 + bob, mobile ? 1.98 : 2.55, 1, drawTime, 0, false, Math.sin(drawTime * 1.5) * 0.07);
     star(ctx, mamaX - (mobile ? 31 : 56), mamaY - 53, mobile ? 2 : 3, "#ffeca2");
     star(ctx, mamaX + (mobile ? 34 : 38), mamaY - 24, 2, "#ffeeb6");
     if (!mobile) beetle(ctx, at(0.893) + Math.sin(drawTime * 1.7) * 7, 240, -1, drawTime, 1.29);
@@ -611,7 +617,8 @@ export class ArcadeView {
         bits(ctx, color, [[px - 10, py - 17, 20, 1], [px - 15, py - 12, 1, 20], [px + 14, py - 12, 1, 20], [px - 10, py + 13, 20, 1], [px - 13, py - 15, 3, 1], [px + 10, py - 15, 3, 1], [px - 13, py + 11, 3, 1], [px + 10, py + 11, 3, 1]]);
         ctx.globalAlpha = 1;
       }
-      drawMama(ctx, p.x, p.y, 0.89, p.face, time, Math.abs(p.vx) > 16 ? p.stride : 0, !p.ground);
+      const tilt = this.reducedMotion ? 0 : Math.sin(p.roll) * 0.27 + p.vx / 1650;
+      drawMama(ctx, p.x, p.y, 1, p.face, time, Math.abs(p.vx) > 20 ? p.stride * 0.5 : 0, !p.ground, tilt);
     }
 
     for (const effect of this.effects) {
