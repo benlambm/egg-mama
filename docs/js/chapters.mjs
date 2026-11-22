@@ -20,7 +20,7 @@ const pal = ([sky, light, top, fringe, soil, rock, shadow, outline, accent], wat
 export const CHAPTERS = [
   {
     id: "meadow", name: "Meadow", bg: "assets/meadow.webp", song: "meadow",
-    seconds: 220, // target time of a clean main-route run at cruise (see T.paceBands)
+    seconds: 220, // target time of a clean main-route run at cruise 
     story: "A storm scattered Mama’s clutch across the valley! The first golden egg is just up the path.",
     learn: "Find the first golden egg, then jump a single wide gap by following the egg arc.",
     tip: "Swipe up to jump",
