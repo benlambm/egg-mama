@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- A game, not a website: one fixed full-viewport stage, no scrolling, no zoom, no bounce (DESIGN.md §10). -->
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover,interactive-widget=resizes-content">
+<meta name="description" content="Egg Mama: roll, jump and hatch a flock across thirteen painted landscapes to light the beacon and bring the flock home.">
+<meta name="theme-color" content="#253749">
+<meta name="color-scheme" content="dark">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Egg Mama">
+<meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="style.css">
+<title>Egg Mama</title>
+</head>
+<body>
+<div id="stage">
+  <canvas id="game" aria-label="Egg Mama game world"></canvas>
+  <div id="ui"></div>
+  <button id="pause-btn" data-ui data-action="pause" aria-label="Pause" title="Pause" hidden></button>
+  <noscript><p class="no-js">Egg Mama needs JavaScript to run. Please turn it on and reload.</p></noscript>
+</div>
+<div id="safe" aria-hidden="true"></div>
+<script type="module" src="js/main.mjs"></script>
+</body>
+</html>

@@ -1,0 +1,643 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Egg Mama — actor art sheets</title>
+<!--
+  Page half of tools/art-sheet.mjs. Renders contact sheets of every ACTORS animation frame at the REAL phone scale
+  (iPhone 13 landscape: 844x390 CSS px, DPR 3  =>  3.25 device px per world unit) over crops of the real pixel-art
+  backgrounds, plus a platform-coloured strip, and runs the perf / cache-bound check.
+  Driven by Playwright (window.sheetApi); can also be opened by hand:  /tools/art-sheet.html?sheet=mama-meadow
+-->
+<style>
+  html, body { margin: 0; background: #1b1b1f; color: #ddd; font: 13px system-ui, sans-serif; }
+  canvas { display: block; max-width: 100vw; height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="16" height="16"></canvas>
+<script type="module">
+import * as A from '/docs/js/art-actors.mjs';
+import { SpriteCache, createSurface } from '/docs/js/artkit.mjs';
+import { CHAPTERS } from '/docs/js/chapters.mjs';
+
+/* ───────── real phone geometry ───────── */
+const DPR = 3, FRAME_W = 844, FRAME_H = 390;
+const S0 = (FRAME_H / 360) * DPR;                       // 3.25 device px per world unit (iPhone 13 landscape)
+const W0 = FRAME_W * DPR, H0 = FRAME_H * DPR;           // 2532 x 1170 device px
+const ROW_U = 60;                                       // 6 rows of 60 u fill the 360 u of world height
+const rowY = (r) => ROW_U * r + 54;                     // baseline (ground y) of row r
+
+const BG = { meadow: 'meadow', fogwood: 'fogwood', caverns: 'lantern-caverns' };
+const chapterOf = (id) => CHAPTERS.find((c) => c.id === id);
+const images = {};
+async function loadBg(id) {
+  if (!images[id]) { const im = new Image(); im.src = `/docs/assets/${id}.webp`; await im.decode(); images[id] = im; }
+  return images[id];
+}
+
+/* ───────── sheet canvas ───────── */
+class Sheet {
+  constructor(opts = {}) {
+    this.S = opts.scale || S0;
+    this.W = opts.w || W0; this.H = opts.h || H0;
+    const canvas = document.getElementById('c');
+    canvas.width = this.W; canvas.height = this.H;
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.cache = new SpriteCache();
+    this.cache.setScale(this.S);
+    this.palette = null; this.dark = false;
+  }
+  async background(kind, chapter) {
+    const { ctx, W, H } = this;
+    this.palette = chapter ? chapter.palette : null;
+    this.dark = !!(chapter && chapter.dark);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    if (kind === 'strip' || !kind) {                      // flat, palette-coloured stand-in for terrain
+      const p = this.palette || CHAPTERS[0].palette;
+      ctx.fillStyle = p.sky; ctx.fillRect(0, 0, W, H);
+      return;
+    }
+    const im = await loadBg(kind);
+    const s = Math.max(W / im.width, H / im.height);       // cover-fit, crisp (the game draws backgrounds with smoothing off)
+    const dw = im.width * s, dh = im.height * s;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(im, (W - dw) / 2, (H - dh) / 2, dw, dh);
+    ctx.imageSmoothingEnabled = true;
+  }
+  /** A stand-in platform: palette top / soil, thin, drawn from x0..x1 (u) with its top at world y. */
+  strip(y, x0 = 0, x1 = this.W / this.S, depth = 7) {
+    const { ctx, S } = this, p = this.palette || CHAPTERS[0].palette;
+    ctx.setTransform(S, 0, 0, S, 0, 0);
+    ctx.fillStyle = p.soil; ctx.fillRect(x0, y, x1 - x0, depth);
+    ctx.fillStyle = p.top; ctx.fillRect(x0, y - 0.2, x1 - x0, 2.6);
+    ctx.fillStyle = p.light; ctx.globalAlpha = 0.7; ctx.fillRect(x0, y - 0.2, x1 - x0, 0.9); ctx.globalAlpha = 1;
+    ctx.fillStyle = p.outline; ctx.fillRect(x0, y + depth - 0.6, x1 - x0, 0.6);
+  }
+  /** Run fn with the world transform and the origin at (x, y). */
+  at(x, y, fn) {
+    const { ctx, S } = this;
+    ctx.save(); ctx.setTransform(S, 0, 0, S, x * S, y * S);
+    try { fn(ctx, this.cache); } catch (e) { console.error('draw failed', e); window.__errors = (window.__errors || []).concat(String(e && e.stack || e)); }
+    ctx.restore();
+  }
+  label(x, y, text, size = 20) {
+    const { ctx, S } = this;
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.font = `600 ${size}px ui-monospace, Menlo, monospace`; ctx.textBaseline = 'top';
+    const w = ctx.measureText(text).width;
+    ctx.fillStyle = 'rgba(10,10,20,0.62)'; ctx.fillRect(x * S - 4, y * S - 2, w + 8, size + 6);
+    ctx.fillStyle = '#fff'; ctx.fillText(text, x * S, y * S);
+    ctx.restore();
+  }
+  /** A row of items: [{ draw(ctx, cache, k), label? }], spaced `step` u apart, standing on baseline y. */
+  row(r, name, items, { x = 26, step = 56, strip = true, labels = true } = {}) {
+    const y = typeof r === 'number' && r < 10 ? rowY(r) : r;
+    if (strip) this.strip(y);
+    if (name) this.label(2, y - 54, name, 15);
+    items.forEach((it, k) => {
+      const ix = x + k * step;
+      this.at(ix, y, (ctx, cache) => it.draw(ctx, cache, k));
+      if (labels && it.label) this.label(ix - 14, y + 7.8, it.label, 13);
+    });
+  }
+  png() { return this.canvas.toDataURL('image/png'); }
+}
+
+/* ───────── pose helpers ───────── */
+const CYCLE_U = (2 * Math.PI) / 0.09;                    // distance for one full rock cycle (see drawMama)
+const mama = (o) => (ctx, cache) => A.drawMama(ctx, cache, Object.assign({ x: 0, y: 0, face: 1, vx: 0, vy: 0, phase: 0, onGround: true, squash: 0, hurt: 0, invulnFlash: false, shield: false, happy: false, t: 0, rock: undefined }, o));
+const range = (n) => Array.from({ length: n }, (_, k) => k);
+
+/* ───────── the sheets ───────── */
+const SHEETS = {};
+
+// Mama, every pose, over one background.
+function mamaSheet(bgKey) {
+  return async (opts) => {
+    const sh = new Sheet(opts); const ch = chapterOf(bgKey === 'caverns' ? 'lantern-caverns' : bgKey);
+    await sh.background(BG[bgKey], ch); const dark = sh.dark;
+    const d = (o) => mama(Object.assign({ dark }, o));
+    sh.row(0, 'run cycle, facing right (vx 110, rock + waddle)', range(12).map((k) => ({ draw: d({ vx: 110, phase: k * CYCLE_U / 12, t: 0.3 + k * 0.053 }), label: k + '' })), { step: 58 });
+    sh.row(1, 'facing left / idle / blink / look', [
+      ...range(5).map((k) => ({ draw: d({ face: -1, vx: -110, phase: -k * CYCLE_U / 5, t: 0.4 + k * 0.1 }), label: 'L' + k })),
+      { draw: d({ t: 0.5 }), label: 'idle' }, { draw: d({ t: 0.02 + 3.7 * 0.69 }), label: 'blink' },
+      { draw: d({ vx: 178, phase: 5, t: 1 }), label: 'push' }, { draw: d({ vx: 64, face: -1, phase: 9, t: 1 }), label: 'back' },
+      { draw: d({ shield: true, t: 1 }), label: 'shield' }, { draw: d({ invulnFlash: true, t: 1 }), label: 'flash' },
+      { draw: d({ face: -1, shield: true, t: 1 }), label: 'L shield' }], { step: 58 });
+    sh.row(2, 'jump: rising -> apex -> falling', [-560, -420, -240, -80, 0, 120, 300, 520, 800].map((vy, k) => ({ draw: d({ onGround: false, vx: 110, vy, t: 0.2 + k * 0.045 }), label: 'vy ' + vy })), { step: 62 });
+    sh.row(3, 'land squash 0..1 / hurt 0..1 / happy (beacon)', [
+      ...[0.3, 0.6, 1].map((s) => ({ draw: d({ squash: s, vx: 110, t: 1 }), label: 'sq ' + s })),
+      ...[0.15, 0.5, 1].map((h) => ({ draw: d({ hurt: h, t: 0.7 }), label: 'hurt ' + h })),
+      ...range(6).map((k) => ({ draw: d({ happy: true, t: 0.5 + k * 0.085 }), label: 'happy' }))], { step: 58 });
+    // ducklings
+    sh.row(4, 'ducklings: waddle, blink, air, facing, fade', [
+      ...range(6).map((k) => ({ draw: (c, ca) => A.drawDuckling(c, ca, { x: 0, y: 0, face: 1, air: false, t: 0.2 + k * 0.045, i: 0, dark }), label: 'w' + k })),
+      { draw: (c, ca) => A.drawDuckling(c, ca, { x: 0, y: 0, face: -1, air: false, t: 0.5, i: 1, dark }), label: 'L' },
+      ...[0, 1, 2].map((k) => ({ draw: (c, ca) => A.drawDuckling(c, ca, { x: 0, y: 0, face: 1, air: true, t: 0.1 + k * 0.03, i: 0, dark }), label: 'air' })),
+      { draw: (c, ca) => A.drawDuckling(c, ca, { x: 0, y: 0, face: 1, air: false, t: 0.1, i: 2, alpha: 0.5, dark }), label: 'a .5' },
+      { draw: (c, ca) => A.drawDuckling(c, ca, { x: 0, y: 0, face: 1, air: false, t: 0.04, i: 0.6, dark }), label: 'blink?' }], { step: 44 });
+    // eggs
+    const egg = (kind, t, i) => (c, ca) => A.drawEgg(c, ca, { x: 0, y: -14, kind, t, i, dark });
+    sh.row(5, 'eggs: plain bob / golden pulse / hatch burst 0..1', [
+      ...range(4).map((k) => ({ draw: egg('egg', 0.3 + k * 0.4, k), label: 'egg' })),
+      ...range(6).map((k) => ({ draw: egg('gold', 0.1 + k * 0.17, 0), label: 'gold' })),
+      ...[0, 0.12, 0.25, 0.4, 0.55, 0.7, 0.85, 1].map((pr) => ({ draw: (c, ca) => A.drawHatchBurst(c, ca, { x: 0, y: -14, progress: pr, dark }), label: pr + '' }))], { step: 40 });
+    return sh.png();
+  };
+}
+for (const k of Object.keys(BG)) SHEETS['mama-' + k] = mamaSheet(k);
+
+// Everything of one landscape on its own painting: its walker + flyer cycles, the lineup, pickups, flag.
+function chapterSheet(chapter) {
+  return async (opts) => {
+    const sh = new Sheet(opts); await sh.background(chapter.id === 'x' ? 'strip' : chapter.id, chapter);
+    const P = chapter.palette, dark = chapter.dark, wk = chapter.skin.walker, fl = chapter.skin.flyer;
+    const walker = (k, o = {}) => (c, ca) => A.drawWalker(c, ca, Object.assign({ species: wk, palette: P, x: 0, y: 0, face: 1, t: k / 12 * 1.1, dark }, o));
+    const flyer = (k, o = {}) => (c, ca) => A.drawFlyer(c, ca, Object.assign({ species: fl, palette: P, x: 0, y: -12, face: 1, t: k / 12 * 0.5, dark }, o));
+    sh.row(0, `${chapter.name}: walker "${wk}" walk cycle (12) facing right, then left x2, squash x3`, [
+      ...range(12).map((k) => ({ draw: walker(k), label: k + '' })),
+      ...[0, 4].map((k) => ({ draw: walker(k, { face: -1 }), label: 'L' })),
+      ...[0.35, 0.7, 1].map((s) => ({ draw: walker(2, { squash: s }), label: 'sq' + s }))], { step: 44 });
+    sh.row(1, `${chapter.name}: flyer "${fl}" flight cycle (12) facing right, then left x3`, [
+      ...range(12).map((k) => ({ draw: flyer(k), label: k + '' })),
+      ...[0, 3, 6].map((k) => ({ draw: flyer(k, { face: -1 }), label: 'L' }))], { step: 44 });
+    // lineup on the "real" ground height
+    sh.row(2, 'lineup', [
+      { draw: mama({ vx: 110, phase: 30, t: 1, dark }), label: 'Mama' },
+      ...[0, 1, 2].map((k) => ({ draw: (c, ca) => A.drawDuckling(c, ca, { x: 0, y: 0, face: 1, air: k === 2, t: 1.2 + k * 0.1, i: k, dark }), label: 'duck' })),
+      { draw: (c, ca) => A.drawEgg(c, ca, { x: 0, y: -14, kind: 'egg', t: 1, i: 0, dark }), label: 'egg' },
+      { draw: (c, ca) => A.drawEgg(c, ca, { x: 0, y: -16, kind: 'gold', t: 1, i: 0, dark }), label: 'gold' },
+      { draw: (c, ca) => A.drawShieldPickup(c, ca, { x: 0, y: -16, t: 1, dark }), label: 'shield' },
+      { draw: (c, ca) => A.drawMagnetPickup(c, ca, { x: 0, y: -16, t: 1, dark }), label: 'magnet' },
+      { draw: (c, ca) => A.drawFlag(c, ca, { x: 0, y: 0, active: false, t: 1, palette: P, dark }), label: 'flag off' },
+      { draw: (c, ca) => A.drawFlag(c, ca, { x: 0, y: 0, active: true, t: 1, palette: P, dark }), label: 'flag on' },
+      { draw: walker(3), label: 'walker' },
+      { draw: flyer(3), label: 'flyer' }], { step: 56 });
+    // Mama + bubble + the full flock (5), as the player sees her
+    sh.row(3, 'Mama + bubble + flock of 5 (as in play)', [
+      { draw: (c, ca) => { A.drawMama(c, ca, { x: 0, y: 0, face: 1, vx: 110, phase: 12, onGround: true, squash: 0, hurt: 0, shield: true, t: 2, dark }); A.drawShieldBubble(c, ca, { x: 0, y: 0, t: 2, pop: 0, dark }); }, label: 'shield on' },
+      { draw: (c, ca) => { A.drawShieldBubble(c, ca, { x: 0, y: 0, t: 2, pop: 0.4, dark }); }, label: 'pop .4' },
+      { draw: (c, ca) => { A.drawShieldBubble(c, ca, { x: 0, y: 0, t: 2, pop: 0.8, dark }); }, label: 'pop .8' },
+      ...range(5).map((k) => ({ draw: (c, ca) => A.drawDuckling(c, ca, { x: 0, y: 0, face: 1, air: false, t: 2 + k * 0.05, i: k, dark }), label: 'd' + k })),
+      { draw: mama({ face: 1, vx: 110, phase: 20, t: 2.3, dark }), label: 'Mama' }], { step: 56 });
+    sh.row(4, 'on-ground hazards share: walker walking toward Mama (hurts side) vs above (stomp)', [
+      { draw: mama({ vx: 110, phase: 4, t: 1, dark }), label: 'Mama' },
+      { draw: walker(5, { face: -1 }), label: 'walker' },
+      { draw: (c, ca) => { c.save(); c.translate(0, -26); mama({ onGround: false, vx: 110, vy: 300, t: 1, dark })(c, ca); c.restore(); walker(5, { face: -1 })(c, ca); }, label: 'stomp' }], { step: 70 });
+    sh.row(5, 'checkpoint flag unfurl (inactive -> active frames)', [
+      ...[false, true].flatMap((a) => range(5).map((k) => ({ draw: (c, ca) => A.drawFlag(c, ca, { x: 0, y: 0, active: a, t: 0.1 + k * 0.1, palette: P, dark }), label: (a ? 'on ' : 'off ') + k })))], { step: 50 });
+    return sh.png();
+  };
+}
+for (const ch of CHAPTERS) SHEETS['chapter-' + ch.id] = chapterSheet(ch);
+
+/* ───────── magnified detail sheets (vector art, so bigger is simply sharper; default 3x = 9.75 px/u) ───────── */
+function zoomSheet(fn, bg = 'meadow', chapterId = 'meadow') {
+  return async (opts) => {
+    const z = (opts && opts.zoom) || 3;
+    const sh = new Sheet({ scale: S0 * z, w: W0, h: H0 });
+    const ch = chapterOf(chapterId);
+    await sh.background(bg, ch);
+    sh.zoom = z;
+    await fn(sh, ch);
+    return sh.png();
+  };
+}
+// one row of big items on a ground strip; u coordinates assume 3x (260 x 120 u) and scale down with the zoom factor
+function zrow(sh, y, step, items, x0 = 26) {
+  const k = 3 / sh.zoom;
+  sh.strip(y * k, 0, sh.W / sh.S, 4 * k);
+  items.forEach((it, i) => sh.at((x0 + i * step) * k, y * k, (c, ca) => { c.scale(1 / k, 1 / k); it(c, ca); }));
+}
+const mk = (o) => (c, ca) => A.drawMama(c, ca, Object.assign({ x: 0, y: 0, face: 1, vx: 0, vy: 0, phase: 0, onGround: true, squash: 0, hurt: 0, t: 1 }, o));
+SHEETS['zoom-mama'] = zoomSheet(async (sh) => {
+  zrow(sh, 112, 42, [mk({ vx: 110, phase: 4, t: 0.4 }), mk({ vx: 110, phase: 18, t: 0.5 }), mk({ vx: 110, phase: 34, t: 0.6 }), mk({ vx: 110, onGround: false, vy: -400, t: 0.7 }), mk({ happy: true, t: 0.8 }), mk({ hurt: 1, t: 0.9 })]);
+});
+SHEETS['zoom-small'] = zoomSheet(async (sh) => {
+  zrow(sh, 100, 26, [
+    (c, ca) => A.drawDuckling(c, ca, { x: 0, y: 0, face: 1, t: 0.3, i: 0 }), (c, ca) => A.drawDuckling(c, ca, { x: 0, y: 0, face: 1, air: true, t: 0.3, i: 0 }),
+    (c, ca) => A.drawEgg(c, ca, { x: 0, y: -14, kind: 'egg', t: 1, i: 0 }), (c, ca) => A.drawEgg(c, ca, { x: 0, y: -16, kind: 'gold', t: 1, i: 0 }),
+    (c, ca) => A.drawShieldPickup(c, ca, { x: 0, y: -16, t: 1 }), (c, ca) => A.drawMagnetPickup(c, ca, { x: 0, y: -16, t: 1 }),
+    (c, ca) => A.drawHatchBurst(c, ca, { x: 0, y: -16, progress: 0.2 }), (c, ca) => A.drawHatchBurst(c, ca, { x: 0, y: -16, progress: 0.42 }),
+    (c, ca) => A.drawHatchBurst(c, ca, { x: 0, y: -16, progress: 0.6 }), (c, ca) => A.drawHatchBurst(c, ca, { x: 0, y: -16, progress: 0.8 })], 22);
+});
+SHEETS['zoom-walkers'] = zoomSheet(async (sh) => {
+  const P = CHAPTERS[0].palette;
+  zrow(sh, 112, 50, ['snail', 'caterpillar', 'beetle', 'crab', 'mite'].map((sp, k) => (c, ca) => A.drawWalker(c, ca, { species: sp, palette: P, x: 0, y: 0, face: 1, t: 0.3 + k * 0.1 })), 30);
+});
+SHEETS['zoom-flyers'] = zoomSheet(async (sh) => {
+  const P = CHAPTERS[0].palette;
+  zrow(sh, 112, 42, ['bee', 'moth', 'gull', 'bat', 'owl', 'hawk'].map((sp, k) => (c, ca) => A.drawFlyer(c, ca, { species: sp, palette: P, x: 0, y: -60, face: 1, t: 0.1 + k * 0.07 })), 24);
+});
+SHEETS['zoom-flag'] = zoomSheet(async (sh) => {
+  const P = CHAPTERS[0].palette;
+  zrow(sh, 112, 52, [
+    (c, ca) => A.drawFlag(c, ca, { x: 0, y: 0, active: false, t: 1, palette: P }), (c, ca) => A.drawFlag(c, ca, { x: 0, y: 0, active: true, t: 1, palette: P }),
+    (c, ca) => { A.drawMama(c, ca, { x: 0, y: 0, face: 1, vx: 0, t: 1, shield: true }); A.drawShieldBubble(c, ca, { x: 0, y: 0, t: 1, pop: 0 }); },
+    (c, ca) => { A.drawMama(c, ca, { x: 0, y: 0, face: 1, vx: 0, t: 1 }); A.drawShieldBubble(c, ca, { x: 0, y: 0, t: 1, pop: 0.5 }); },
+    (c, ca) => { A.drawDuckling(c, ca, { x: -12, y: 0, face: 1, t: 1, i: 0 }); A.drawDuckling(c, ca, { x: 6, y: 0, face: 1, t: 1.1, i: 1 }); A.drawMama(c, ca, { x: 28, y: 0, face: 1, vx: 110, phase: 9, t: 1 }); }], 26);
+});
+SHEETS['zoom-caverns'] = zoomSheet(async (sh, ch) => {
+  const P = ch.palette, d = true;
+  zrow(sh, 112, 42, [
+    (c, ca) => A.drawMama(c, ca, { x: 0, y: 0, face: 1, vx: 110, phase: 9, t: 1, dark: d }),
+    (c, ca) => A.drawDuckling(c, ca, { x: 0, y: 0, face: 1, t: 1, i: 0, dark: d }), (c, ca) => A.drawEgg(c, ca, { x: 0, y: -14, kind: 'egg', t: 1, i: 0, dark: d }),
+    (c, ca) => A.drawEgg(c, ca, { x: 0, y: -16, kind: 'gold', t: 1, i: 0, dark: d }), (c, ca) => A.drawWalker(c, ca, { species: 'beetle', palette: P, x: 0, y: 0, face: 1, t: 0.3, dark: d }),
+    (c, ca) => A.drawFlyer(c, ca, { species: 'bat', palette: P, x: 0, y: -22, face: 1, t: 0.3, dark: d })], 26);
+}, 'lantern-caverns', 'lantern-caverns');
+SHEETS['zoom-fog'] = zoomSheet(async (sh, ch) => {
+  const P = ch.palette;
+  zrow(sh, 112, 40, [
+    (c, ca) => A.drawMama(c, ca, { x: 0, y: 0, face: 1, vx: 110, phase: 9, t: 1 }),
+    (c, ca) => A.drawDuckling(c, ca, { x: 0, y: 0, face: 1, t: 1, i: 0 }), (c, ca) => A.drawEgg(c, ca, { x: 0, y: -14, kind: 'egg', t: 1, i: 0 }),
+    (c, ca) => A.drawEgg(c, ca, { x: 0, y: -16, kind: 'gold', t: 1, i: 0 }), (c, ca) => A.drawWalker(c, ca, { species: 'snail', palette: P, x: 0, y: 0, face: 1, t: 0.3 }),
+    (c, ca) => A.drawFlyer(c, ca, { species: 'moth', palette: P, x: 0, y: -22, face: 1, t: 0.3 }),
+    (c, ca) => A.drawFlag(c, ca, { x: 0, y: 0, active: true, t: 1, palette: P })], 26);
+}, 'fogwood', 'fogwood');
+
+/* ───────── the species gallery: every species in every palette (palette-fit check) ───────── */
+SHEETS['gallery-walkers'] = async (opts) => {
+  const sh = new Sheet(opts); await sh.background('strip', null);
+  const species = ['snail', 'caterpillar', 'beetle', 'crab', 'mite'];
+  CHAPTERS.forEach((ch, r) => { /* two per row */ });
+  const cols = CHAPTERS.length;
+  species.forEach((sp, r) => {
+    const y = rowY(r);
+    sh.label(2, y - ROW_U + 6, sp + ' in every landscape palette', 16);
+    CHAPTERS.forEach((ch, k) => {
+      const x = 26 + k * 58;
+      // each cell gets that landscape's sky behind it, and its ground below
+      const ctx = sh.ctx; ctx.setTransform(sh.S, 0, 0, sh.S, 0, 0);
+      ctx.fillStyle = ch.palette.sky; ctx.fillRect(x - 28, y - ROW_U + 22, 58, ROW_U - 22);
+      ctx.fillStyle = ch.palette.top; ctx.fillRect(x - 28, y, 58, 3); ctx.fillStyle = ch.palette.soil; ctx.fillRect(x - 28, y + 3, 58, 4);
+      sh.at(x, y, (c, ca) => A.drawWalker(c, ca, { species: sp, palette: ch.palette, x: 0, y: 0, face: 1, t: 0.4, dark: ch.dark }));
+    });
+  });
+  return sh.png();
+};
+SHEETS['gallery-flyers'] = async (opts) => {
+  const sh = new Sheet(opts); await sh.background('strip', null);
+  const species = ['bee', 'moth', 'gull', 'bat', 'owl', 'hawk'];
+  species.forEach((sp, r) => {
+    const y = rowY(r);
+    sh.label(2, y - ROW_U + 6, sp + ' in every landscape palette', 16);
+    CHAPTERS.forEach((ch, k) => {
+      const x = 26 + k * 58;
+      const ctx = sh.ctx; ctx.setTransform(sh.S, 0, 0, sh.S, 0, 0);
+      ctx.fillStyle = ch.palette.sky; ctx.fillRect(x - 28, y - ROW_U + 22, 58, ROW_U - 22);
+      ctx.fillStyle = ch.palette.top; ctx.fillRect(x - 28, y - 4, 58, 3); ctx.fillStyle = ch.palette.soil; ctx.fillRect(x - 28, y - 1, 58, 8);
+      sh.at(x, y - 24, (c, ca) => A.drawFlyer(c, ca, { species: sp, palette: ch.palette, x: 0, y: 0, face: 1, t: 0.2, dark: ch.dark }));
+    });
+  });
+  return sh.png();
+};
+
+/* ───────── perf + cache-bound + extents checks ───────── */
+function cacheStats(cache, detail = false) {
+  let bytes = 0; const by = {};
+  for (const [k, s] of cache.map) {
+    const b = s.canvas.width * s.canvas.height * 4; bytes += b;
+    if (detail) { const key = k.replace(/^@[0-9a-f]+\|/, '@|').split('|').slice(0, 3).join('|').replace(/\|[LR]$/, ''); by[key] = (by[key] || 0) + b; }
+  }
+  const r = { sprites: cache.map.size, mb: +(bytes / 1048576).toFixed(2) };
+  if (detail) r.top = Object.entries(by).sort((a, b) => b[1] - a[1]).slice(0, 14).map(([k, b]) => `${k}: ${(b / 1048576).toFixed(2)} MB`);
+  return r;
+}
+const WALKERS = ['snail', 'caterpillar', 'beetle', 'crab', 'mite'], FLYERS = ['bee', 'moth', 'gull', 'bat', 'owl', 'hawk'];
+const KINDS = ['mama', 'duck', 'egg', 'gold', 'walker', 'flyer', 'shield', 'magnet', 'flag', 'bubble', 'hatch'];
+function drawActor(ctx, cache, a, t, P) {
+  const tt = t + a.i * 0.31;
+  switch (a.kind) {
+    case 'mama': A.drawMama(ctx, cache, { x: a.x, y: a.y, face: a.face, vx: 110 * a.face, phase: t * 110, onGround: true, squash: 0, hurt: 0, t: tt, dark: a.dark }); break;
+    case 'duck': A.drawDuckling(ctx, cache, { x: a.x, y: a.y, face: a.face, air: a.i === 3, t: tt, i: a.i, dark: a.dark }); break;
+    case 'egg': A.drawEgg(ctx, cache, { x: a.x, y: a.y, kind: 'egg', t: tt, i: a.i, dark: a.dark }); break;
+    case 'gold': A.drawEgg(ctx, cache, { x: a.x, y: a.y, kind: 'gold', t: tt, i: a.i, dark: a.dark }); break;
+    case 'walker': A.drawWalker(ctx, cache, { species: WALKERS[a.sp % 5], palette: P, x: a.x, y: a.y, face: a.face, t: tt, squash: 0, dark: a.dark }); break;
+    case 'flyer': A.drawFlyer(ctx, cache, { species: FLYERS[a.sp % 6], palette: P, x: a.x, y: a.y, face: a.face, t: tt, dark: a.dark }); break;
+    case 'shield': A.drawShieldPickup(ctx, cache, { x: a.x, y: a.y, t: tt, dark: a.dark }); break;
+    case 'magnet': A.drawMagnetPickup(ctx, cache, { x: a.x, y: a.y, t: tt, dark: a.dark }); break;
+    case 'flag': A.drawFlag(ctx, cache, { x: a.x, y: a.y, active: a.i % 2 === 0, t: tt, palette: P, dark: a.dark }); break;
+    case 'bubble': A.drawShieldBubble(ctx, cache, { x: a.x, y: a.y, t: tt, pop: a.i === 5 ? (t * 2) % 1 : 0, dark: a.dark }); break;
+    case 'hatch': A.drawHatchBurst(ctx, cache, { x: a.x, y: a.y, progress: (t * 1.1 + a.i * 0.13) % 1, dark: a.dark }); break;
+  }
+}
+/**
+ * Stamp N actors per frame for `frames` frames on a full phone-sized canvas and time it.
+ * scene:'stress' = N actors round-robin over every kind (default 300); scene:'typical' = what a real frame holds
+ * (Mama + a flock of 5 + eggs + a few enemies + pickups + a flag + a bubble).
+ */
+async function perf({ actors = 300, frames = 300, warm = 60, scene = 'stress' } = {}) {
+  const W = W0, H = H0;
+  const canvas = document.createElement('canvas'); canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  const cache = new SpriteCache(); cache.setScale(S0);
+  let seed = 12345; const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+  const pals = CHAPTERS.map((c) => c.palette);
+  const list = [];
+  const typical = [['mama', 1], ['duck', 5], ['egg', 14], ['gold', 3], ['walker', 3], ['flyer', 2], ['shield', 1], ['magnet', 1], ['flag', 2], ['bubble', 1]];
+  const kinds = scene === 'typical' ? typical.flatMap(([k, n]) => Array(n).fill(k)) : null;
+  const total = kinds ? kinds.length : actors;
+  for (let i = 0; i < total; i++) {
+    const kind = kinds ? kinds[i] : KINDS[i % KINDS.length];
+    list.push({ kind, x: rnd() * 770, y: 40 + rnd() * 300, face: rnd() < 0.5 ? -1 : 1, i: Math.floor(rnd() * 8), sp: Math.floor(rnd() * 6), pal: scene === 'typical' ? 0 : Math.floor(rnd() * 3), dark: scene === 'typical' ? false : rnd() < 0.2 });
+  }
+  const drawAll = (t) => {
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = '#7fb7e6'; ctx.fillRect(0, 0, W, H);
+    ctx.setTransform(S0, 0, 0, S0, 0, 0);
+    for (const a of list) drawActor(ctx, cache, a, t, pals[a.pal]);
+    ctx.getImageData(0, 0, 1, 1);                          // force the rasteriser to finish so the timing is honest
+  };
+  for (let f = 0; f < warm; f++) drawAll(f / 60);
+  const before = cacheStats(cache);
+  const times = [];
+  for (let f = 0; f < frames; f++) { const t0 = performance.now(); drawAll(1 + f / 60); times.push(performance.now() - t0); }
+  times.sort((a, b) => a - b);
+  const mean = times.reduce((a, b) => a + b, 0) / times.length;
+  const after = cacheStats(cache);
+  return { scene, actors: total, frames, msPerFrameMean: +mean.toFixed(2), msP50: +times[times.length >> 1].toFixed(2), msP95: +times[Math.floor(times.length * 0.95)].toFixed(2), msMax: +times[times.length - 1].toFixed(2), usPerActor: +(mean * 1000 / total).toFixed(1), cacheAfterWarm: before, cacheAfterRun: after, errors: window.__errors || [] };
+}
+
+/**
+ * Travel through every landscape three times (3 circuits ~ 3 hours of play), drawing that landscape's creatures, flag and
+ * the player's cast for a few seconds in both facings and both lighting modes, and record the cache size at the end of each
+ * landscape. It must plateau: palette-dependent sprites are evicted, everything else is keyed by a fixed set of variants.
+ */
+async function boundCheck() {
+  const canvas = document.createElement('canvas'); canvas.width = 700; canvas.height = 500;
+  const ctx = canvas.getContext('2d');
+  const cache = new SpriteCache(); cache.setScale(S0);
+  const history = [];
+  for (let circuit = 0; circuit < 3; circuit++) {
+    for (const ch of CHAPTERS) {
+      for (let f = 0; f < 240; f++) {
+        const t = f / 60 + circuit * 7;
+        ctx.setTransform(S0, 0, 0, S0, 0, 0); ctx.clearRect(0, 0, 700, 500);
+        const face = f % 90 < 45 ? 1 : -1;
+        A.drawWalker(ctx, cache, { species: ch.skin.walker, palette: ch.palette, x: 40, y: 100, face, t, i: 0, dark: ch.dark, squash: f % 120 > 100 ? 0.5 : 0 });
+        A.drawWalker(ctx, cache, { species: ch.skin.walker, palette: ch.palette, x: 90, y: 100, face: -face, t, i: 3, dark: ch.dark });
+        A.drawFlyer(ctx, cache, { species: ch.skin.flyer, palette: ch.palette, x: 140, y: 60, face, t, i: 1, dark: ch.dark });
+        A.drawFlag(ctx, cache, { x: 190, y: 100, active: f % 200 > 100, t, palette: ch.palette, dark: ch.dark });
+        A.drawMama(ctx, cache, { x: 240, y: 100, face, vx: 110 * face, phase: f * 2, onGround: f % 80 > 20, vy: f % 80 < 20 ? -300 + f % 80 * 20 : 0, squash: f % 80 === 21 ? 1 : 0, hurt: f % 300 > 280 ? 0.6 : 0, happy: f > 220, shield: f % 160 > 80, invulnFlash: f % 10 > 5, t, dark: ch.dark });
+        A.drawDuckling(ctx, cache, { x: 290, y: 100, face, air: f % 70 < 10, t, i: f % 5, alpha: f % 100 < 5 ? 0.5 : 1, dark: ch.dark });
+        A.drawEgg(ctx, cache, { x: 330, y: 90, kind: 'egg', t, i: 1, dark: ch.dark });
+        A.drawEgg(ctx, cache, { x: 360, y: 90, kind: 'gold', t, i: 2, dark: ch.dark });
+        A.drawShieldPickup(ctx, cache, { x: 400, y: 90, t, dark: ch.dark }); A.drawMagnetPickup(ctx, cache, { x: 430, y: 90, t, dark: ch.dark });
+        A.drawShieldBubble(ctx, cache, { x: 470, y: 100, t, pop: f % 120 > 100 ? (f % 120 - 100) / 20 : 0, dark: ch.dark });
+        A.drawHatchBurst(ctx, cache, { x: 520, y: 90, progress: (f % 54) / 54, dark: ch.dark });
+      }
+      history.push({ circuit: circuit + 1, chapter: ch.id, ...cacheStats(cache, circuit === 2 && ch.id === 'beacon-summit') });
+    }
+  }
+  return { history, errors: window.__errors || [] };
+}
+
+/** Opaque-pixel extents (world units, relative to each actor's documented origin) of every actor over its animation. */
+function measure() {
+  const S = S0, N = 320, OX = 160, OY = 220;
+  const cv = document.createElement('canvas'); cv.width = Math.ceil(N * S); cv.height = Math.ceil(N * S);
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  const cache = new SpriteCache(); cache.setScale(S);
+  const out = {};
+  const P = CHAPTERS[0].palette;
+  const grab = (name, drawFns) => {
+    let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+    for (const fn of drawFns) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, cv.width, cv.height);
+      ctx.setTransform(S, 0, 0, S, OX * S, OY * S);
+      fn(ctx, cache);
+      const d = ctx.getImageData(0, 0, cv.width, cv.height).data, w = cv.width;
+      for (let py = 0; py < cv.height; py++) for (let px = 0; px < w; px++) {
+        if (d[(py * w + px) * 4 + 3] >= 200) { const ux = px / S - OX, uy = py / S - OY; if (ux < x0) x0 = ux; if (ux > x1) x1 = ux; if (uy < y0) y0 = uy; if (uy > y1) y1 = uy; }
+      }
+    }
+    out[name] = { x0: +x0.toFixed(1), x1: +x1.toFixed(1), y0: +y0.toFixed(1), y1: +y1.toFixed(1), w: +(x1 - x0).toFixed(1), h: +(y1 - y0).toFixed(1) };
+  };
+  const mamaPose = (o) => (c, ca) => A.drawMama(c, ca, Object.assign({ x: 0, y: 0, face: 1, vx: 0, vy: 0, phase: 0, onGround: true, squash: 0, hurt: 0, t: 0.5 }, o));
+  grab('mama:idle(right)', [mamaPose({})]);
+  grab('mama:shell-only', [(c, ca) => { A.drawMama(c, ca, { x: 0, y: 0, face: 1, vx: 0, t: 0.5 }); }]);
+  grab('mama:idle(both)', [mamaPose({}), mamaPose({ face: -1 })]);
+  grab('mama:run', range(12).flatMap((k) => [1, -1].map((f) => mamaPose({ face: f, vx: 110 * f, phase: k * 70 / 12 * f, t: 0.3 + k * 0.05 }))));
+  grab('mama:air', [-560, -200, 0, 400, 800].map((vy) => mamaPose({ onGround: false, vx: 110, vy })));
+  grab('mama:squash+hurt+happy', [mamaPose({ squash: 1 }), mamaPose({ hurt: 1 }), ...range(8).map((k) => mamaPose({ happy: true, t: 0.1 * k }))]);
+  grab('duckling(ground)', range(12).flatMap((k) => [1].map((f) => (c, ca) => A.drawDuckling(c, ca, { x: 0, y: 0, face: f, air: false, t: k * 0.05, i: k % 3 }))));
+  grab('duckling(+air)', range(12).flatMap((k) => [1].map((f) => (c, ca) => A.drawDuckling(c, ca, { x: 0, y: 0, face: f, air: k % 4 === 3, t: k * 0.05, i: k % 3 }))));
+  grab('egg', range(8).map((k) => (c, ca) => A.drawEgg(c, ca, { x: 0, y: 0, kind: 'egg', t: k * 0.4, i: 0 })));
+  grab('gold', range(10).map((k) => (c, ca) => A.drawEgg(c, ca, { x: 0, y: 0, kind: 'gold', t: k * 0.17, i: 0 })));
+  for (const sp of WALKERS) grab('walker:' + sp, range(12).flatMap((k) => [1].map((f) => (c, ca) => A.drawWalker(c, ca, { species: sp, palette: P, x: 0, y: 0, face: f, t: k / 12 / ({ snail: 0.9, caterpillar: 1.3, beetle: 2, crab: 2.4, mite: 3.2 }[sp]) + 0.001 }))));
+  for (const sp of FLYERS) grab('flyer:' + sp, range(12).flatMap((k) => [1].map((f) => (c, ca) => A.drawFlyer(c, ca, { species: sp, palette: P, x: 0, y: 0, face: f, t: k / 12 / ({ bee: 4.5, moth: 2.2, gull: 1.7, bat: 3, owl: 2, hawk: 1.8 }[sp]) + 0.001 }))));
+  grab('shield', [(c, ca) => A.drawShieldPickup(c, ca, { x: 0, y: 0, t: 0 })]);
+  grab('magnet', [(c, ca) => A.drawMagnetPickup(c, ca, { x: 0, y: 0, t: 0 })]);
+  grab('bubble', [(c, ca) => A.drawShieldBubble(c, ca, { x: 0, y: 0, t: 0, pop: 0 })]);
+  grab('flag:active', range(12).map((k) => (c, ca) => A.drawFlag(c, ca, { x: 0, y: 0, active: true, t: k / 12 / 1.5, palette: P })));
+  grab('flag:inactive', range(12).map((k) => (c, ca) => A.drawFlag(c, ca, { x: 0, y: 0, active: false, t: k / 12 / 0.7, palette: P })));
+  return { sizes: out, declared: A.ACTOR_SIZES };
+}
+
+/** Call every export with awkward input (missing params, NaN, unknown species, broken palettes): nothing may throw. */
+function edge() {
+  const cv = document.createElement('canvas'); cv.width = 400; cv.height = 300;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  const cache = new SpriteCache(); cache.setScale(S0);
+  const fails = [], ran = [];
+  const tryIt = (name, fn) => { try { ctx.setTransform(S0, 0, 0, S0, 0, 0); fn(); ran.push(name); } catch (e) { fails.push(`${name}: ${e && e.message}`); } };
+  const weird = [undefined, {}, { x: NaN, y: Infinity, t: NaN, face: 'x', i: NaN }, { x: 50, y: 80, t: -3.7, face: -1, i: -2 }, { x: 50, y: 80, t: 1e9, face: 0 }];
+  const badPalettes = [undefined, null, {}, { top: '#fff' }, { sky: 'red', top: 5 }, CHAPTERS[0].palette, Object.assign({}, CHAPTERS[3].palette, { accent: undefined })];
+  for (const [i, w] of weird.entries()) {
+    tryIt('drawMama ' + i, () => A.drawMama(ctx, cache, w));
+    tryIt('drawMama wild ' + i, () => A.drawMama(ctx, cache, Object.assign({}, w, { squash: 9, hurt: -4, vx: 1e6, vy: -1e6, phase: 1e12, onGround: false, happy: true, shield: true, invulnFlash: true, rock: NaN, dark: true, alpha: 7 })));
+    tryIt('drawDuckling ' + i, () => A.drawDuckling(ctx, cache, w));
+    tryIt('drawDuckling alpha ' + i, () => A.drawDuckling(ctx, cache, Object.assign({}, w, { alpha: -1, air: true })));
+    tryIt('drawEgg ' + i, () => A.drawEgg(ctx, cache, w));
+    tryIt('drawEgg gold ' + i, () => A.drawEgg(ctx, cache, Object.assign({}, w, { kind: 'gold', dark: true })));
+    tryIt('drawEgg unknown ' + i, () => A.drawEgg(ctx, cache, Object.assign({}, w, { kind: 'banana' })));
+    tryIt('drawHatchBurst ' + i, () => A.drawHatchBurst(ctx, cache, w));
+    tryIt('drawHatchBurst oob ' + i, () => A.drawHatchBurst(ctx, cache, Object.assign({}, w, { progress: 7 })));
+    tryIt('drawShieldPickup ' + i, () => A.drawShieldPickup(ctx, cache, w));
+    tryIt('drawMagnetPickup ' + i, () => A.drawMagnetPickup(ctx, cache, w));
+    tryIt('drawShieldBubble ' + i, () => A.drawShieldBubble(ctx, cache, w));
+    tryIt('drawShieldBubble pop ' + i, () => A.drawShieldBubble(ctx, cache, Object.assign({}, w, { pop: 3 })));
+    tryIt('drawWalker ' + i, () => A.drawWalker(ctx, cache, w));
+    tryIt('drawFlyer ' + i, () => A.drawFlyer(ctx, cache, w));
+    tryIt('drawFlag ' + i, () => A.drawFlag(ctx, cache, w));
+    for (const [j, pal] of badPalettes.entries()) {
+      for (const sp of [...WALKERS, 'dragon', undefined]) tryIt(`drawWalker ${sp} pal${j} w${i}`, () => A.drawWalker(ctx, cache, Object.assign({}, w, { species: sp, palette: pal, squash: 2 })));
+      for (const sp of [...FLYERS, 'dragon', undefined]) tryIt(`drawFlyer ${sp} pal${j} w${i}`, () => A.drawFlyer(ctx, cache, Object.assign({}, w, { species: sp, palette: pal, dark: j % 2 === 0 })));
+      tryIt(`drawFlag pal${j} w${i}`, () => A.drawFlag(ctx, cache, Object.assign({}, w, { palette: pal, active: i % 2 === 0, dark: true })));
+    }
+  }
+  tryIt('prewarmActors', () => A.prewarmActors(cache, { palette: CHAPTERS[6].palette, species: ['beetle', 'hawk', 'dragon'], dark: false }));
+  tryIt('prewarmActors empty', () => A.prewarmActors(cache));
+  // a context whose smoothing was turned off (the renderer draws the painted backgrounds that way) must be restored for sprites
+  ctx.imageSmoothingEnabled = false;
+  tryIt('smoothing restored', () => { A.drawEgg(ctx, cache, { x: 10, y: 10, kind: 'egg', t: 0, i: 0 }); if (!ctx.imageSmoothingEnabled) throw new Error('imageSmoothingEnabled still false after a draw'); });
+  // the draw calls must leave the context's transform / alpha as they found it
+  ctx.setTransform(S0, 0, 0, S0, 3, 4); ctx.globalAlpha = 0.5;
+  const before = JSON.stringify([ctx.getTransform().toJSON(), ctx.globalAlpha]);
+  tryIt('state kept', () => { A.drawMama(ctx, cache, { x: 5, y: 5, hurt: 1, invulnFlash: true, shield: true }); A.drawWalker(ctx, cache, { species: 'crab', palette: CHAPTERS[7].palette, x: 5, y: 5, squash: 1 }); A.drawHatchBurst(ctx, cache, { x: 5, y: 5, progress: 0.5 }); A.drawShieldBubble(ctx, cache, { x: 5, y: 5, pop: 0.5 }); A.drawFlag(ctx, cache, { x: 5, y: 5, active: true, palette: CHAPTERS[0].palette }); });
+  ctx.setTransform(S0, 0, 0, S0, 3, 4);
+  const after = JSON.stringify([ctx.getTransform().toJSON(), ctx.globalAlpha]);
+  if (before !== after) fails.push('draw calls changed ctx transform/alpha: ' + before + ' -> ' + after);
+  return { ran: ran.length, fails };
+}
+
+/**
+ * Light must stay on the UPPER LEFT whichever way the art faces. Proof: render facing right and facing left; mirror the
+ * left-facing picture. The silhouettes must match (IoU ~ 1) but the shading must NOT (a naively flipped sprite would be
+ * identical: mean luminance difference 0). Symmetric props are checked directly: upper-left brighter than lower-right.
+ */
+function lighting() {
+  const S = S0, N = 160, OX = 80, OY = 110;
+  const cv = document.createElement('canvas'); cv.width = Math.ceil(N * S); cv.height = Math.ceil(N * S);
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  const cache = new SpriteCache(); cache.setScale(S);
+  const P = CHAPTERS[0].palette, mirror = {}, direct = {};
+  const W = cv.width, H = cv.height;
+  const render = (fn) => { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, W, H); ctx.setTransform(S, 0, 0, S, OX * S, OY * S); fn(ctx, cache); return ctx.getImageData(0, 0, W, H).data; };
+  const lum = (d, i) => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+  const pair = (name, mk) => {
+    const r = render(mk(1)), l = render(mk(-1));
+    let inter = 0, uni = 0, diff = 0, n = 0;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4, j = (y * W + (W - 1 - x)) * 4;            // mirror about the actor's x = 0 (OX * S is an integer)
+      const a = r[i + 3] >= 128, b = l[j + 3] >= 128;
+      if (a || b) uni++; if (a && b) { inter++; if (r[i + 3] >= 250 && l[j + 3] >= 250) { diff += Math.abs(lum(r, i) - lum(l, j)); n++; } }
+    }
+    mirror[name] = { iou: +(inter / Math.max(1, uni)).toFixed(3), shadeDiff: +(diff / Math.max(1, n)).toFixed(2) };
+  };
+  pair('mama', (f) => (c, ca) => A.drawMama(c, ca, { x: 0, y: 0, face: f, vx: 0, t: 0.5 }));
+  pair('duckling', (f) => (c, ca) => A.drawDuckling(c, ca, { x: 0, y: 0, face: f, t: 0, i: 0 }));   // t = 0: no waddle sway
+  for (const sp of WALKERS) pair(sp, (f) => (c, ca) => A.drawWalker(c, ca, { species: sp, palette: P, x: 0, y: 0, face: f, t: 0.1 }));
+  for (const sp of FLYERS) pair(sp, (f) => (c, ca) => A.drawFlyer(c, ca, { species: sp, palette: P, x: 0, y: 0, face: f, t: 0.1 }));
+  const quad = (name, fn) => {
+    const d = render(fn);
+    let x0 = 1e9, x1 = -1, y0 = 1e9, y1 = -1;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (d[(y * W + x) * 4 + 3] >= 250) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2; let ul = 0, nul = 0, lr = 0, nlr = 0;
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const i = (y * W + x) * 4; if (d[i + 3] < 250) continue;
+      if (x < cx && y < cy) { ul += lum(d, i); nul++; } else if (x > cx && y > cy) { lr += lum(d, i); nlr++; }
+    }
+    direct[name] = { ul: +(ul / Math.max(1, nul)).toFixed(1), lr: +(lr / Math.max(1, nlr)).toFixed(1) };
+  };
+  quad('egg', (c, ca) => A.drawEgg(c, ca, { x: 0, y: 0, kind: 'egg', t: 0, i: 0 }));
+  quad('gold', (c, ca) => A.drawEgg(c, ca, { x: 0, y: 0, kind: 'gold', t: 0, i: 0 }));
+  quad('shield', (c, ca) => A.drawShieldPickup(c, ca, { x: 0, y: 0, t: 0 }));
+  quad('magnet', (c, ca) => A.drawMagnetPickup(c, ca, { x: 0, y: 0, t: 0 }));
+  return { mirror, direct };
+}
+
+/**
+ * Regression checks found by the audit.
+ *  - bubble: in EVERY lighting the shield bubble's interior must stay see-through (a stacked halo once turned it milky in dark
+ *    chapters and Mama vanished behind it): mean alpha of the inner disc, and how much Mama's belly changes when it is drawn over her.
+ *  - dark: a call that carries a palette but no `dark` flag works the lighting out from the palette (DESIGN §5 has no such flag).
+ *  - prewarm: after prewarmActors({species, cast, flags}) drawing every pose of those things bakes NOTHING new; a tiny budget
+ *    makes it return false and repeated calls finish; the cache never holds more than the documented number of groups.
+ */
+function regress() {
+  const S = S0, N = 140, OX = 70, OY = 100;
+  const cv = document.createElement('canvas'); cv.width = Math.ceil(N * S); cv.height = Math.ceil(N * S);
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  const W = cv.width, H = cv.height, out = { bubble: {}, dark: {}, prewarm: {} };
+  const fresh = () => { const c = new SpriteCache(); c.setScale(S); return c; };
+  const grab = (fn, bg) => { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, W, H); if (bg) { ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H); } ctx.setTransform(S, 0, 0, S, OX * S, OY * S); fn(ctx); return ctx.getImageData(0, 0, W, H).data; };
+  const lum = (d, i) => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+  for (const dark of [false, true]) {
+    const ca = fresh();
+    // 1. interior opacity of the bubble alone (inner 60 % of the ellipse)
+    const d = grab((c) => A.drawShieldBubble(c, ca, { x: 0, y: 0, t: 0, dark }));
+    let sum = 0, n = 0;
+    const cyU = A.ACTOR_SIZES.bubble.cy;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const ux = (x / S - OX) / 24, uy = ((y / S - OY) - cyU) / 27.2;
+      if (ux * ux + uy * uy < 0.36) { sum += d[(y * W + x) * 4 + 3] / 255; n++; }
+    }
+    // 2. Mama's belly with and without the bubble, over a dark backdrop
+    const bgc = dark ? '#2a2468' : '#4a9ae0';
+    const m0 = grab((c) => A.drawMama(c, ca, { x: 0, y: 0, face: 1, vx: 0, t: 0.5, dark }), bgc);
+    const m1 = grab((c) => { A.drawMama(c, ca, { x: 0, y: 0, face: 1, vx: 0, t: 0.5, dark, shield: true }); A.drawShieldBubble(c, ca, { x: 0, y: 0, t: 0.5, dark }); }, bgc);
+    let dl = 0, k = 0;
+    for (let y = Math.round((OY - 30) * S); y < Math.round((OY - 12) * S); y++) for (let x = Math.round((OX - 8) * S); x < Math.round((OX + 4) * S); x++) { const i = (y * W + x) * 4; dl += Math.abs(lum(m0, i) - lum(m1, i)); k++; }
+    out.bubble[dark ? 'dark' : 'light'] = { interiorAlpha: +(sum / n).toFixed(3), mamaBellyShift: +(dl / k).toFixed(1) };
+  }
+  // dark auto-detection from the palette
+  const same = (a, b) => { for (let i = 0; i < a.length; i += 4) if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2] || a[i + 3] !== b[i + 3]) return false; return true; };
+  const caverns = CHAPTERS.find((c) => c.id === 'lantern-caverns'), meadow = CHAPTERS[0];
+  const draws = {
+    walker: (pal, dark) => (c, ca) => A.drawWalker(c, ca, { species: 'beetle', palette: pal, x: 0, y: 0, t: 0.1, dark }),
+    flyer: (pal, dark) => (c, ca) => A.drawFlyer(c, ca, { species: 'bat', palette: pal, x: 0, y: 0, t: 0.1, dark }),
+    flag: (pal, dark) => (c, ca) => A.drawFlag(c, ca, { palette: pal, x: 0, y: 0, t: 0.1, active: true, dark }),
+  };
+  for (const [name, mk] of Object.entries(draws)) {
+    const g = (pal, dark) => grab((c) => mk(pal, dark)(c, fresh()));
+    out.dark[name] = { caveAutoEqualsDark: same(g(caverns.palette, undefined), g(caverns.palette, true)), caveDarkDiffersFromLight: !same(g(caverns.palette, true), g(caverns.palette, false)), meadowAutoEqualsLight: same(g(meadow.palette, undefined), g(meadow.palette, false)), explicitWins: same(g(caverns.palette, false), g(caverns.palette, false)) && !same(g(caverns.palette, false), g(caverns.palette, undefined)) };
+  }
+  // prewarm contract
+  const pw = { palette: caverns.palette, species: [caverns.skin.walker, caverns.skin.flyer], dark: true, cast: true, flags: true };
+  const cA = fresh();
+  const t0 = performance.now(); const doneAll = A.prewarmActors(cA, pw); const allMs = performance.now() - t0;
+  const sizeAfter = cA.map.size;
+  const P = caverns.palette, CH = caverns, dk = true;
+  ctx.setTransform(S, 0, 0, S, 60, 60);
+  for (let f = 0; f < 90; f++) {
+    const t = f / 30, face = f % 2 ? 1 : -1;
+    A.drawWalker(ctx, cA, { species: CH.skin.walker, palette: P, x: 0, y: 0, face, t, i: f, dark: dk });
+    A.drawFlyer(ctx, cA, { species: CH.skin.flyer, palette: P, x: 0, y: 0, face, t, i: f, dark: dk });
+    A.drawFlag(ctx, cA, { palette: P, x: 0, y: 0, active: f % 2 === 0, t, dark: dk });
+    A.drawMama(ctx, cA, { x: 0, y: 0, face, vx: 110 * face, phase: f * 3, t, dark: dk, hurt: f % 9 === 0 ? 1 : 0, happy: f % 7 === 0, shield: f % 5 === 0, onGround: f % 4 !== 0, vy: -200 });
+    A.drawMama(ctx, cA, { x: 0, y: 0, face, t: 2.56, dark: dk });
+    A.drawDuckling(ctx, cA, { x: 0, y: 0, face, t, i: f, air: f % 3 === 0, dark: dk });
+    A.drawEgg(ctx, cA, { x: 0, y: 0, kind: f % 2 ? 'egg' : 'gold', t, i: f, dark: dk });
+    A.drawHatchBurst(ctx, cA, { x: 0, y: 0, progress: f / 90, dark: dk });
+    A.drawShieldPickup(ctx, cA, { x: 0, y: 0, t, dark: dk }); A.drawMagnetPickup(ctx, cA, { x: 0, y: 0, t, dark: dk });
+    A.drawShieldBubble(ctx, cA, { x: 0, y: 0, t, pop: f % 6 / 6, dark: dk });
+  }
+  const cB = fresh(); let calls = 0; while (!A.prewarmActors(cB, Object.assign({}, pw, { budgetMs: 0.01 })) && calls < 400) calls++;
+  out.prewarm = { doneAll, sprites: sizeAfter, allMs: +allMs.toFixed(1), newSpritesWhileDrawing: cA.map.size - sizeAfter, incrementalCalls: calls, incrementalSame: cB.map.size === sizeAfter };
+  return out;
+}
+
+/**
+ * No sprite may be clipped by its own cache box: every walker / flyer frame (all 11 species, both facings, light + dark), the
+ * flag, the whole cast and every hatch / pop / jump pose is baked for every landscape, and no canvas may have an opaque pixel on
+ * its outer edge (the owl's wingtips once were sliced flat in half its frames, and nothing else noticed).
+ */
+function clipCheck() {
+  const S = S0, bad = []; let total = 0;
+  const cv = document.createElement('canvas'); cv.width = 400; cv.height = 300; const ctx = cv.getContext('2d');
+  const ALL = ['snail', 'caterpillar', 'beetle', 'crab', 'mite', 'bee', 'moth', 'gull', 'bat', 'owl', 'hawk'];
+  for (const ch of CHAPTERS) for (const dark of ch.dark ? [true] : [false, true]) {
+    const cache = new SpriteCache(); cache.setScale(S);
+    A.prewarmActors(cache, { palette: ch.palette, species: ch === CHAPTERS[0] ? ALL : [ch.skin.walker, ch.skin.flyer], dark, cast: true, flags: true });
+    ctx.setTransform(S, 0, 0, S, 60, 60);
+    for (let f = 0; f < 12; f++) {                                  // poses the cast prewarm does not enumerate
+      A.drawShieldBubble(ctx, cache, { x: 0, y: 0, t: f, pop: f / 12, dark });
+      A.drawMama(ctx, cache, { x: 0, y: 0, face: f % 2 ? 1 : -1, vx: 110, vy: f * 100 - 500, onGround: f > 9, squash: f / 12, hurt: f % 3 ? 0 : 1, happy: f === 4, shield: f % 4 === 0, t: f * 0.7, dark });
+      A.drawHatchBurst(ctx, cache, { x: 0, y: 0, progress: f / 11, dark });
+    }
+    for (const [key, sp] of cache.map) {
+      total++;
+      const c = sp.canvas, w = c.width, h = c.height, d = c.getContext('2d').getImageData(0, 0, w, h).data; let mx = 0;
+      const chk = (x, y) => { const a = d[(y * w + x) * 4 + 3]; if (a > mx) mx = a; };
+      for (let x = 0; x < w; x++) { chk(x, 0); chk(x, h - 1); } for (let y = 0; y < h; y++) { chk(0, y); chk(w - 1, y); }
+      if (mx > 6) bad.push(`${ch.id}${dark ? '/dark' : ''} ${key} (edge alpha ${mx})`);
+    }
+  }
+  return { total, bad };
+}
+
+/* ───────── API for Playwright ───────── */
+window.sheetApi = {
+  names: () => Object.keys(SHEETS),
+  render: async (name, opts) => { window.__errors = []; const fn = SHEETS[name]; if (!fn) throw new Error('unknown sheet ' + name); const url = await fn(opts || {}); return { url, errors: window.__errors || [], cache: null }; },
+  perf, boundCheck, measure, edge, lighting, regress, clipCheck,
+  cacheStats,
+};
+const q = new URLSearchParams(location.search).get('sheet');
+if (q && SHEETS[q]) SHEETS[q]().then(() => { document.title = 'ready'; });
+window.sheetReady = true;
+</script>
+</body>
+</html>

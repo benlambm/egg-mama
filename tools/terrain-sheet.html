@@ -1,0 +1,234 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Egg Mama terrain sheet</title>
+<!--
+  Dev page for tools/terrain-sheet.mjs: composes sample scenes of every terrain export over the real
+  pixel-art backgrounds at phone scale (844x390 CSS px, DPR 3). Not part of the shipped game.
+  Serve the REPO ROOT (the Node tool does) and open /tools/terrain-sheet.html.
+  window.sheet.render(chapterIndex, 'A'|'B'|'C'|'D'|'W', {t}) draws one scene; window.sheet.perf(chapterIndex) times it.
+-->
+<style>html,body{margin:0;background:#1b1b22}canvas{display:block}</style>
+<canvas id="c"></canvas>
+<script type="module">
+import { CHAPTERS } from '/docs/js/chapters.mjs';
+import { T } from '/docs/js/tuning.mjs';
+import { SpriteCache, eggPath, outline, lit, shade, rgba } from '/docs/js/artkit.mjs';
+import * as TER from '/docs/js/art-terrain.mjs';
+
+const W = 844, H = 390;
+const DPR = window.devicePixelRatio || 3;
+const SCALE = H / T.viewH;                       // css px per world unit
+const canvas = document.getElementById('c');
+canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
+canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+const ctx = canvas.getContext('2d', { willReadFrequently: false });
+let cache = new SpriteCache();
+cache.setScale(SCALE * DPR);
+
+const images = new Map();
+async function bg(ch) {
+  if (!images.has(ch.id)) {
+    const img = new Image(); img.src = '/docs/' + ch.bg; await img.decode(); images.set(ch.id, img);
+  }
+  return images.get(ch.id);
+}
+
+function drawBg(img) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  const s = Math.max(canvas.width / img.width, canvas.height / img.height);
+  const w = img.width * s, h = img.height * s;
+  ctx.drawImage(img, (canvas.width - w) / 2, canvas.height - h, w, h);   // bottom-anchored cover
+  ctx.imageSmoothingEnabled = true;
+}
+function world(cam = 0) { ctx.setTransform(DPR * SCALE, 0, 0, DPR * SCALE, -cam * DPR * SCALE, 0); }
+
+/* ── placeholders so scale and contrast can be judged (the real actors live in art-actors.mjs) ── */
+function mamaDummy(x, y) {
+  ctx.save(); ctx.translate(x, y);
+  eggPath(ctx, 0, -23, 19, 23); ctx.fillStyle = '#fbf1da'; ctx.fill(); ctx.strokeStyle = '#8a5f38'; ctx.lineWidth = 2.4; ctx.stroke();
+  ctx.fillStyle = '#3a2618'; ctx.beginPath(); ctx.arc(-5, -29, 2, 0, 7); ctx.arc(7, -29, 2, 0, 7); ctx.fill();
+  ctx.fillStyle = '#ff9f2e'; ctx.beginPath(); ctx.moveTo(8, -24); ctx.lineTo(16, -22); ctx.lineTo(8, -20); ctx.fill();
+  ctx.restore();
+}
+function eggDummy(x, y, gold) {
+  ctx.save(); ctx.translate(x, y);
+  eggPath(ctx, 0, 0, gold ? 11 : 8, gold ? 14 : 10); ctx.fillStyle = gold ? '#ffd43b' : '#fff7e6'; ctx.fill(); ctx.strokeStyle = gold ? '#8a4a00' : '#6a5a7a'; ctx.lineWidth = 1.6; ctx.stroke();
+  ctx.restore();
+}
+
+let nextId = 1;
+const plat = (kind, x, y, w, h, ch, extra = {}) => ({ id: extra.id ?? nextId++, kind, x, y, w, h, ch, cx: x, cy: y, pcx: x, pcy: y, vx: 0, vy: 0, state: 'idle', st: 0, fallV: 0, ...extra });
+
+const GY = T.groundY;
+function sceneA(ci) {
+  const g = (x, y, w, h = 120, e = {}) => plat('ground', x, y, w, h, ci, e);
+  const l = (x, y, w, e = {}) => plat('ledge', x, y, w, 16, ci, e);
+  return {
+    plats: [g(-60, GY, 360, 120, { id: 11 }), g(350, GY, 290, 120, { id: 12 }), g(690, 236, 220, 110, { id: 13 }),
+            l(52, 214, 112, { id: 21 }), l(214, 176, 86, { id: 22 }), l(396, 204, 150, { id: 23 }), l(588, 150, 100, { id: 24 })],
+    after() {
+      mamaDummy(110, GY); mamaDummy(470, GY); mamaDummy(760, 236);
+      eggDummy(108, 192); eggDummy(257, 154); eggDummy(470, 182, true); eggDummy(640, 128);
+    },
+  };
+}
+function sceneB(ci) {
+  const g = (x, y, w, h = 120, e = {}) => plat('ground', x, y, w, h, ci, e);
+  const c = (x, y, w, e = {}) => plat('crumble', x, y, w, 16, ci, e);
+  return {
+    plats: [
+      g(-60, GY, 330, 120, { id: 31 }),
+      g(300, GY, 300, 120, { id: 32, ice: true }),
+      g(640, GY, 260, 120, { id: 33 }),
+      c(40, 214, 100, { id: 41 }),
+      c(170, 214, 100, { id: 42, state: 'rumble', st: 0.35 }),
+      c(300, 214, 100, { id: 43, state: 'fall', st: 0.28, cy: 214 + 34, pcy: 214 + 30, y: 214 }),
+      c(430, 214, 100, { id: 44, state: 'fall', st: 2.85, cy: 214 + 900, y: 214 }),
+      plat('lift', 40, 134, 120, 16, ci, { id: 51, motion: { axis: 'y', amp: 40, period: 4, phase: 0 }, cy: 134 + 28, pcy: 134 + 28 }),
+      plat('mover', 206, 150, 130, 16, ci, { id: 52, motion: { axis: 'x', amp: 44, period: 4, phase: 0 }, cx: 206 + 22, pcx: 206 + 22 }),
+      plat('ledge', 418, 122, 120, 16, ci, { id: 53, ice: true }),
+      plat('mover', 560, 170, 110, 16, ci, { id: 54, ice: true, motion: { axis: 'x', amp: 30, period: 4, phase: 0 } }),
+      plat('ledge', 640, 196, 100, 16, ci, { id: 55 }),
+    ],
+    after() { mamaDummy(80, GY); mamaDummy(430, GY); eggDummy(100, 192); },
+  };
+}
+function sceneC(ci, t) {
+  const ch = CHAPTERS[ci];
+  const g = (x, y, w, h = 120, e = {}) => plat('ground', x, y, w, h, ci, e);
+  const cyc = { period: 3, up: 1.5, phase: 0 };
+  // time offsets inside a 3 s cycle with 1.5 s up: inactive+far from rising, warning, active
+  return {
+    plats: [g(-60, GY, 940, 120, { id: 61 })],
+    after() {
+      const hz = (id, x, w, extra = {}) => ({ id, kind: 'spikes', x, y: GY, w, ...extra });
+      TER.drawSpikes(ctx, cache, hz(1, 70, 48), ch, t, 0);
+      TER.drawSpikes(ctx, cache, hz(2, 150, 28), ch, t, 0);
+      TER.drawSpikes(ctx, cache, hz(3, 215, 40, { cycle: cyc }), ch, 1.0 + 0.0, 0);      // up (active)
+      TER.drawSpikes(ctx, cache, hz(4, 280, 40, { cycle: cyc }), ch, 1.75, 0);          // retracted
+      TER.drawSpikes(ctx, cache, hz(5, 345, 40, { cycle: cyc }), ch, 2.75, 0.7);        // warning wiggle
+      const sp = (id, x, since) => ({ id, x, y: GY, w: 34, bounceT: 5 - since });
+      TER.drawSpring(ctx, cache, sp(1, 430, 9), ch, 5);
+      TER.drawSpring(ctx, cache, sp(2, 480, 0.07), ch, 5);
+      TER.drawSpring(ctx, cache, sp(3, 530, 0.16), ch, 5);
+      TER.drawSpring(ctx, cache, sp(4, 580, 0.25), ch, 5);
+      TER.drawGate(ctx, cache, { x: 690, y: GY, chapter: ch, t, progress: 1 });
+      mamaDummy(30, GY); mamaDummy(400, GY);
+    },
+  };
+}
+function sceneD(ci, t) {
+  const ch = CHAPTERS[ci];
+  return {
+    plats: [plat('ground', -60, GY, 940, 120, ci, { id: 71 })],
+    after() {
+      TER.drawBeacon(ctx, cache, { x: 150, y: GY, lit: false, litT: 0, t });
+      TER.drawBeacon(ctx, cache, { x: 400, y: GY, lit: true, litT: 0.35, t });
+      TER.drawBeacon(ctx, cache, { x: 650, y: GY, lit: true, litT: 4, t });
+      mamaDummy(60, GY);
+    },
+  };
+}
+function sceneW(ci, t) {
+  const ch = CHAPTERS[ci];
+  const g = (x, y, w, h = 120, e = {}) => plat('ground', x, y, w, h, ci, e);
+  return {
+    water: { x0: -10, x1: 800, y: 306, bottom: 370 },
+    plats: [g(-60, GY - 30, 150, 150, { id: 81 }), plat('ledge', 130, 270, 90, 16, ci, { id: 82 }), plat('ledge', 260, 258, 90, 16, ci, { id: 83 }), plat('ledge', 390, 270, 90, 16, ci, { id: 84 }), g(520, GY - 30, 300, 150, { id: 85 })],
+    after() { mamaDummy(40, GY - 30); mamaDummy(300, 258); },
+  };
+}
+const SCENES = { A: sceneA, B: sceneB, C: sceneC, D: sceneD, W: sceneW };
+
+/** opts: t (seconds), cam (world x of the left edge), shift (move platforms + camera far away: precision test),
+ *        noAfter (skip dummies/hazards/etc. so only platforms+water are drawn), bgOnly (just the painting). */
+async function render(ci, name, opts = {}) {
+  nextId = 1000;
+  const ch = CHAPTERS[ci], t = opts.t ?? 2.3, shift = opts.shift || 0;
+  const img = await bg(ch);
+  drawBg(img);
+  if (opts.bgOnly) return true;
+  const sc = SCENES[name](ci, t);
+  if (shift) for (const p of sc.plats) { p.x += shift; p.cx += shift; p.pcx += shift; }
+  world((opts.cam || 0) + shift);
+  if (sc.water) TER.drawWater(ctx, { ...sc.water, x0: sc.water.x0 + shift, x1: sc.water.x1 + shift, chapter: ch, t });
+  for (const p of sc.plats) TER.drawPlatform(ctx, cache, p, ch, t);
+  if (!opts.noAfter && !shift) sc.after();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  return true;
+}
+
+/** Fraction of pixels (sampled) that differ between the bare painting and the scene: proves something was drawn. */
+async function coverage(ci, name) {
+  await render(ci, name, { bgOnly: true });
+  const a = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  await render(ci, name, {});
+  const b = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  let diff = 0, n = 0;
+  for (let i = 0; i < a.length; i += 64) { n++; if (Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]) > 24) diff++; }
+  return diff / n;
+}
+/** Mean absolute per-channel difference (0..255) between two renders: used for the far-world precision check. */
+async function farDiff(ci, name, shift) {
+  await render(ci, name, { noAfter: true });
+  const a = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  await render(ci, name, { noAfter: true, shift });
+  const b = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  let sum = 0, bad = 0;
+  for (let i = 0; i < a.length; i += 4) { const d = Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]); sum += d; if (d > 90) bad++; }
+  return { mean: sum / (a.length / 4) / 3, badFraction: bad / (a.length / 4) };
+}
+async function resetCache() { cache = new SpriteCache(); cache.setScale(SCALE * DPR); }
+async function dataUrl() { return canvas.toDataURL('image/png'); }
+
+/* ── performance: a typical busy screen, DPR 3, ms per frame (flushes the GPU/raster queue every 20 frames) ── */
+async function perf(ci, frames = 240) {
+  const ch = CHAPTERS[ci];
+  const a = sceneA(ci), b = sceneB(ci);
+  const all = [...a.plats, ...b.plats.map((p) => ({ ...p, x: p.x + 780, cx: p.cx + 780, pcx: p.cx + 780 }))];
+  let stamps = 0, draws = 0, grads = 0, pats = 0;
+  const drawImage = ctx.drawImage.bind(ctx), fillRect = ctx.fillRect.bind(ctx);
+  const clg = ctx.createLinearGradient.bind(ctx), crg = ctx.createRadialGradient.bind(ctx), cpat = ctx.createPattern.bind(ctx);
+  ctx.drawImage = (...a) => { stamps++; return drawImage(...a); };
+  ctx.fillRect = (...a) => { draws++; return fillRect(...a); };
+  ctx.createLinearGradient = (...a) => { grads++; return clg(...a); };
+  ctx.createRadialGradient = (...a) => { grads++; return crg(...a); };
+  ctx.createPattern = (...a) => { pats++; return cpat(...a); };
+  const frame = (t, cam) => {
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, canvas.width, canvas.height);
+    world(cam);
+    for (const p of all) TER.drawPlatform(ctx, cache, p, ch, t);
+  };
+  for (let i = 0; i < frames; i++) frame(i / 60, i * 1.8);   // pre-pass over the same camera path: builds every tile/sprite/gradient once
+  ctx.getImageData(0, 0, 1, 1);
+  const t0 = performance.now();
+  stamps = 0; draws = 0; grads = 0; pats = 0;
+  for (let i = 0; i < frames; i++) { frame(i / 60, i * 1.8); if (i % 20 === 19) ctx.getImageData(0, 0, 1, 1); }
+  ctx.getImageData(0, 0, 1, 1);
+  const ms = (performance.now() - t0) / frames;
+  ctx.drawImage = drawImage; ctx.fillRect = fillRect; ctx.createLinearGradient = clg; ctx.createRadialGradient = crg; ctx.createPattern = cpat;
+  return { ch: ch.id, platforms: all.length, msPerFrame: +ms.toFixed(3), stampsPerFrame: +(stamps / frames).toFixed(1), fillRectsPerFrame: +(draws / frames).toFixed(1), gradientsPerFrame: grads / frames, patternsPerFrame: pats / frames };
+}
+
+/* warm-up cost (JS time only, no readback): first frame of a chapter with a cold cache vs after warmTerrainSteps() */
+async function warm(ci) {
+  const ch = CHAPTERS[ci];
+  const a = sceneA(ci), b = sceneB(ci), all = [...a.plats, ...b.plats];
+  const gate = { x: 300, y: GY, chapter: ch, t: 1, progress: 1 }, hz = { id: 1, x: 100, y: GY, w: 48 }, sp = { x: 200, y: GY, w: 34, bounceT: -9 };
+  const frame = (c) => { world(0); for (const p of all) TER.drawPlatform(ctx, c, p, ch, 1); TER.drawSpikes(ctx, c, hz, ch, 1, 0); TER.drawSpring(ctx, c, sp, ch, 1); TER.drawGate(ctx, c, gate); };
+  const cold = new SpriteCache(); cold.setScale(SCALE * DPR);
+  let t0 = performance.now(); frame(cold); const first = performance.now() - t0;
+  ctx.getImageData(0, 0, 1, 1);
+  const c2 = new SpriteCache(); c2.setScale(SCALE * DPR);
+  const steps = TER.warmTerrainSteps(c2, ch);
+  let worst = 0, total = 0;
+  for (const f of steps) { t0 = performance.now(); f(); const d = performance.now() - t0; total += d; worst = Math.max(worst, d); }
+  t0 = performance.now(); frame(c2); const after = performance.now() - t0;
+  ctx.getImageData(0, 0, 1, 1);
+  return { coldFirstFrameMs: +first.toFixed(1), warmSteps: steps.length, warmTotalMs: +total.toFixed(1), warmWorstStepMs: +worst.toFixed(1), firstFrameAfterWarmMs: +after.toFixed(1) };
+}
+
+window.sheet = { render, perf, warm, coverage, farDiff, resetCache, dataUrl, chapters: CHAPTERS.length, DPR, W, H };
+window.sheetReady = true;
+</script>
