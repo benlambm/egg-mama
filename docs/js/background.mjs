@@ -2,8 +2,8 @@
  * Egg Mama — the painted world behind the action.
  *
  *   Paintings   decodes the 13 pixel-art landscapes on demand (never more than the few that are needed), draws them
- *               cover-fitted and pixel-crisp, drifting very slowly (T.backgroundParallax) and mirror-tiled, and lets the
- *               renderer dissolve one into the next. A decode never blocks a frame: until a painting arrives the
+ *               cover-fitted (and zoomed a little past the screen, see SLACK) and pixel-crisp, drifting very slowly through
+ *               that spare width (never tiled, so no mirror seam), and lets the renderer dissolve one into the next. A decode never blocks a frame: until a painting arrives the
  *               caller draws the previous one, or the landscape's sky colour.
  *   Atmosphere  the drifting weather of each landscape (pollen, mist, petals, dust, embers, spray, fireflies, snow,
  *               clouds). Cheap particle fields that WRAP around the camera, drawn BEHIND platforms and actors, so a
@@ -339,7 +339,7 @@ export class Atmosphere {
       const par = 0.1 + 0.28 * s2;
       const x = wrap(u * P2 + (2.5 + 7 * s1) * g.t - g.cam * par, P2) - CLOUD_W;
       const y = g.top + 6 + v * Math.min(200, (g.bottom - g.top) * 0.5);
-      ctx.globalAlpha = (0.3 + 0.2 * s2) * weight;
+      ctx.globalAlpha = (0.2 + 0.14 * s2) * weight;       // soft puffs over a pixel painting: kept faint so they read as haze, not smudges
       ctx.drawImage(this.sprite('cloud', tint, i % 3, S), Math.round(x * S), Math.round(g.ty + y * S));
     }
     ctx.restore();

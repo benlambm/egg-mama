@@ -169,6 +169,21 @@ try {
           }
         }
       }
+      // the real pattern of a run of eggs with a golden egg in the middle (the hatch scene): a chain of popups, each placed
+      // above the last, must not land on a third one
+      fx.reset(5);
+      const events = [[0, 328, '+10'], [12, 368, '+10'], [24, 408, '+10'], [36, 448, '+10'], [48, 488, '+10'], [54, 510, '+50'], [66, 528, '+10'], [78, 548, '+10']];
+      for (let f = 0; f < 150; f++) {
+        for (const [at, x, text] of events) if (f === at) fx.popup(x, 254 - (text === '+50' ? 10 : 0), text, 1, text === '+50' ? 21 : 16, text === '+50' ? 1.15 : 0.95);
+        fx.update(1 / 60);
+        const live = fx.pops.filter((p) => p.live);
+        for (let i = 0; i < live.length; i++) for (let j = i + 1; j < live.length; j++) {
+          const a = live[i], b = live[j];
+          if (Math.abs(a.x - b.x) > 40) continue;
+          worst = Math.min(worst, Math.abs((a.y - a.age * 30) - (b.y - b.age * 30)));
+          tests++;
+        }
+      }
       return { worst, tests };
     });
     note(`closest vertical gap between two overlapping-x popups over ${r.tests} samples: ${r.worst.toFixed(1)} u (text height ~ 17 u)`);
@@ -222,6 +237,44 @@ try {
     assert.ok(r.normal.airFrames > 30, 'Mama never jumped');
     assert.ok(r.normal.worst < 0.045, `rock snaps by ${r.normal.worst} rad`);
     assert.ok(r.normal.maxAbs > 0.05 && r.normal.maxAbs <= 0.1001 && r.reduced.maxAbs <= 0.026, 'rock amplitude wrong');
+  });
+
+  await check('the camera follows Mama smoothly through a real run with jumps and jittery frame times (no jumps, no vertical movement, Mama never drawn backwards)', async () => {
+    const r = await page.evaluate(async () => {
+      const SIM = await import('/docs/js/sim.mjs');
+      const { T } = await import('/docs/js/tuning.mjs');
+      const R = window.demo.renderer;
+      await window.demo.place(300, { flock: 2 });
+      const g = window.demo.game, step = T.step;
+      let acc = 0, vnow = 7e6, seed = 7, worstCam = 0, worstScr = 0, back = 0, minScr = 1, maxScr = 0, frames = 0, jumps = 0;
+      const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+      let prevCam = null, prevScr = null, prevX = null;
+      for (let f = 0; f < 60 * 45 && g.status === 'running'; f++) {
+        const dtms = 16.67 + (rnd() - 0.5) * 9;                   // 12..21 ms frames
+        acc += dtms / 1000;
+        while (acc >= step) { window.demo.autopilot(g); SIM.step(g, {}); acc -= step; }
+        const evs = SIM.drainEvents(g); if (evs.length) R.spawn(evs, g);
+        vnow += dtms;
+        const alpha = acc / step;
+        R.draw({ game: g, now: vnow, alpha, mode: 'play' });
+        const mx = R._mp.x, cam = R.camera.x, scr = (mx - cam) / R.view.w;
+        if (prevCam !== null) {
+          // (the first 2.5 s are skipped: Mama is easing in and the camera is still held by the start-of-world clamp)
+          if (f > 150) { worstCam = Math.max(worstCam, Math.abs(cam - prevCam - 1.83)); worstScr = Math.max(worstScr, Math.abs(scr - prevScr) * R.view.w); }
+          if (mx < prevX - 0.01 && g.mama.vx > 0) back++;
+        }
+        if (f > 90) { minScr = Math.min(minScr, scr); maxScr = Math.max(maxScr, scr); }
+        prevCam = cam; prevScr = scr; prevX = mx; frames++;
+        if (R.camera.y !== 0) return { bad: 'vertical camera movement' };
+      }
+      return { frames, worstCam, worstScr, back, minScr, maxScr, x: g.mama.x, status: g.status, jumps: g.stats.jumps };
+    });
+    assert.ok(!r.bad, r.bad);
+    note(`${r.frames} jittery frames, Mama ran to x=${Math.round(r.x)} with ${r.jumps} jumps; Mama sat at ${(r.minScr * 100).toFixed(0)}..${(r.maxScr * 100).toFixed(0)} % of the width; largest camera step error ${r.worstCam.toFixed(2)} u; largest change of Mama's screen position ${r.worstScr.toFixed(2)} u/frame; backwards frames ${r.back}`);
+    assert.ok(r.frames > 1500 && r.jumps >= 3, 'the run did not get far enough to mean anything');
+    assert.ok(r.minScr > 0.22 && r.maxScr < 0.40, 'Mama drifts away from her screen spot');
+    assert.ok(r.worstScr < 1.6, `Mama's screen position jitters by ${r.worstScr} u per frame`);
+    assert.equal(r.back, 0, 'Mama is drawn moving backwards');
   });
 
   /* ───────────── 3. robustness ───────────── */

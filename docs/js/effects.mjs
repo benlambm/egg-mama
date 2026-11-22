@@ -195,6 +195,7 @@ export class Effects {
     }
     for (let i = 0; i < this.pops.length; i++) { const p = this.pops[i]; if (p.live) { p.age += dt; if (p.age >= p.dur) p.live = false; } }
     if (this.pillT < 99) this.pillT += dt;
+    if (this.pillBump > 0) this.pillBump = Math.max(0, this.pillBump - dt * 3);
     if (this.respawnT > 0) this.respawnT = Math.max(0, this.respawnT - dt);
     if (this.cap.live) { this.cap.age += dt; if (this.cap.age >= this.cap.dur) this.cap.live = false; }
     if (!this.cap.live && this.qn > 0) this._next();
@@ -218,13 +219,19 @@ export class Effects {
     // A popup that appears on top of another one is placed just above it instead of overprinting. Every popup rises at
     // the SAME constant speed (a decelerating rise let the newer one catch up with the older one and overprint it again),
     // so the gap chosen here holds for the popups' whole life.
-    let stack = 0;
-    for (let i = 0; i < this.pops.length; i++) {
-      const q = this.pops[i];
-      if (!q.live || q === p || Math.abs(q.x - x) > POP_NEAR) continue;
-      const qy = q.y - q.age * POP_SPEED;                              // where q is right now
-      if (Math.abs(qy - y) < POP_GAP) stack = Math.max(stack, y - qy + POP_GAP);
+    // Moving above one popup can land on another, so repeat until nothing is within POP_GAP (each pass only moves it up).
+    let ny = y;
+    for (let pass = 0; pass < 8; pass++) {
+      let moved = false;
+      for (let i = 0; i < this.pops.length; i++) {
+        const q = this.pops[i];
+        if (!q.live || q === p || Math.abs(q.x - x) > POP_NEAR) continue;
+        const qy = q.y - q.age * POP_SPEED;                          // where q is right now
+        if (Math.abs(qy - ny) < POP_GAP) { ny = qy - POP_GAP; moved = true; }
+      }
+      if (!moved) break;
     }
+    const stack = y - ny;
     p.live = true; p.x = x; p.y = y - stack; p.stack = stack; p.text = text; p.ci = ci; p.size = size; p.age = 0; p.dur = dur;
   }
 
@@ -602,7 +609,7 @@ export class Effects {
     if (a <= 0.01) return;
     const k = Math.max(0.8, Math.min(1.2, v.h / 390));
     const h = 32 * k, x = v.ins.left + 12, y = v.ins.top + 10 - (1 - smooth(Math.min(1, t / 0.18))) * 8;
-    const bump = this.pillBump = Math.max(0, this.pillBump - 0.05);
+    const bump = this.pillBump;                         // (decays in update(): by dt, so a 120 Hz screen plays it at the same speed)
     ctx.font = `900 ${19 * k}px ${FONT}`;
     if (this._pillStr !== this.eggStr || this._pillK !== k) { this._pillStr = this.eggStr; this._pillK = k; this._pillTw = ctx.measureText(this.eggStr).width; }
     const tw = this._pillTw, w = 14 * k + 20 * k + 7 * k + tw + 14 * k;

@@ -36,8 +36,12 @@ export const P = {
   flyerAx: (d) => at(34, 76, d),
   flyerAy: (d) => at(14, 34, d),
   flyerPeriod: (d) => at(4.9, 3.3, d),
-  /** spikes: width (u) and the wait between a pair */
-  spikeW: (d) => at(22, 32, d),
+  /**
+   * spikes: width (u). A spike hop's takeoff window is (54.9 - w) u (see phys.spikeWindow: her body must be 13 u clear of the
+   * thorns on both sides), so 15 u gives 0.36 s and 22 u gives 0.30 s. (22 -> 32 u gave 0.30 -> 0.21 s: the one element in the
+   * game that a sloppy but calm player kept hitting, while every gap, lift and enemy has a window of 0.35 s or more.)
+   */
+  spikeW: (d) => at(15, 22, d),
   /** crumbling ledges */
   crumbleW: (d) => at(104, 70, d),
   crumbleGap: (d) => at(22, 42, d),

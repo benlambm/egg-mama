@@ -8,7 +8,7 @@
  *   r.draw({ game, now, alpha, mode, reducedMotion, fade, paused });
  *
  * ── what it draws, back to front ─────────────────────────────────────────────────────────────────────────────────
- *   painting(s) -> atmosphere -> pit shade -> water -> platforms -> contact shadows -> landmarks (gate, beacon), spikes,
+ *   painting(s) [zoomed past the screen and drifting through the spare width: never tiled] -> atmosphere -> pit shade -> water -> platforms -> contact shadows -> landmarks (gate, beacon), spikes,
  *   springs, flags -> pickups -> enemies -> ducklings -> Mama (+ bubble, magnet badge) -> particles/sprite effects ->
  *   front flakes -> screen space: popups, egg pill, captions, respawn veil -> fade.
  *   (Deviation from the DESIGN list: contact shadows are drawn right after the platforms, UNDER the spikes/pickups/enemies
@@ -202,7 +202,7 @@ export class Renderer {
     this.blinkUntil = -1;
     this.finishT = 0; this.lastMode = '';
     this.reduced = false;
-    this._rock = 0; this._dt = 0;       // Mama's smoothed rock angle; this frame's dt (seconds)
+    this._rock = 0; this._dt = 0;       // how much of Mama's rock is on (0 in the air, 1 on the ground, eased); this frame's dt (seconds)
 
     this.ready = false; this._wantIdx = -1;
     this._readyResolve = null;
@@ -839,11 +839,10 @@ export class Renderer {
     p.shield = !!game.shield;
     p.happy = game.status === 'beacon' || mode === 'finish';
     p.t = t; p.dark = dark;
-    // her shell rocks with her travel; the horizon never tilts. Reduced motion softens it to a quarter. The angle goes through a
-    // light low-pass (about 45 ms) so it eases out at take-off and back in on landing instead of snapping by up to 0.1 rad.
-    const rockTarget = m.onGround && !dead ? Math.sin(m.phase * 0.09) * 0.10 * speed * (reduced ? 0.25 : 1) : 0;
-    this._rock += (rockTarget - this._rock) * (1 - Math.exp(-this._dt * 22));
-    p.rock = this._rock;
+    // her shell rocks with her travel; the horizon never tilts. Reduced motion softens it to a quarter. The rock fades out at
+    // take-off and back in on landing (a ~45 ms ease of its weight) instead of snapping by up to 0.1 rad; its amplitude is untouched.
+    this._rock += ((m.onGround && !dead ? 1 : 0) - this._rock) * (1 - Math.exp(-this._dt * 22));
+    p.rock = Math.sin(m.phase * 0.09) * 0.10 * speed * (reduced ? 0.25 : 1) * this._rock;
     if (dead) {
       const spin = (game.statusT || 0) * DEAD_TUMBLE * (m.vx < 0 || m.face < 0 ? -1 : 1) * (reduced ? 0.4 : 1);
       ctx.save(); ctx.translate(mx, my - 19); ctx.rotate(spin); p.x = 0; p.y = 19;

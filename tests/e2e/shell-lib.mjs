@@ -9,9 +9,11 @@
  * serve docs/ with `python3 -m http.server` on a random port, and put screenshots in SHELL_SHOTS
  * (default: <OS temp dir>/egg-mama-shell). They never write inside the repo.
  *
- * Because the real main.mjs will replace the placeholder, everything here talks to the page through
- * window.__shell (ui, input, mode, save, settings, actionLog …); the integrator keeps that small hook or
- * adapts `boot()` below.
+ * Everything here talks to the REAL main.mjs, which installs its test hooks only when the URL has ?debug:
+ *   window.__shell  the small surface the shell suites were written against (ui, input, mode, save, settings, actionLog,
+ *                   run {eggs, score, flock}, setMode, startRun, showTitle, pauseGame)
+ *   window.__egg    the integration hooks (game(), level(), state(), teleport(), fastForward(), forceBeacon(), forceDead() ...)
+ * boot() adds ?debug for you. tests/e2e/game-*.mjs build on the same helpers.
  */
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
@@ -75,6 +77,7 @@ export function reporter(title) {
 /* ───────── pages ───────── */
 /** Open the game in a fresh context. `init` runs before the page's own scripts (seed localStorage here). */
 export async function boot(browser, server, device, { init, search = '', errors } = {}) {
+  if (!/[?&]debug\b/.test(search)) search = search ? `${search}&debug` : '?debug';
   const context = await browser.newContext(contextOptions(device));
   if (init) await context.addInitScript(init);
   const page = await context.newPage();
@@ -82,6 +85,7 @@ export async function boot(browser, server, device, { init, search = '', errors 
   page.on('console', (m) => { if (m.type() === 'error') (errors || []).push(`console.error: ${m.text()}`); });
   await page.goto(server.url + search);
   await page.waitForFunction(() => window.__shell && window.__shell.ui, null, { timeout: 15000 });
+  await page.waitForFunction(() => window.__egg && window.__egg.state().worldReady, null, { timeout: 30000 });
   await settle(page);
   const cdp = await context.newCDPSession(page);
   return { context, page, cdp };
@@ -131,6 +135,24 @@ export const scrollState = (page) => page.evaluate(() => ({
   vvTop: window.visualViewport ? window.visualViewport.offsetTop : 0, vvLeft: window.visualViewport ? window.visualViewport.offsetLeft : 0,
 }));
 export const scrollIsZero = (s) => s.x === 0 && s.y === 0 && s.docTop === 0 && s.docLeft === 0 && s.bodyTop === 0 && s.bodyLeft === 0;
+
+/** Centre of an element in CSS px (for real touches), or null when it is not on screen. */
+export const centerOf = (page, selector) => page.evaluate((sel) => {
+  const el = document.querySelector(sel);
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  if (!r.width || !r.height) return null;
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+}, selector);
+/** A real touch tap on the centre of the first element matching `selector`. Throws when it cannot be found. */
+export async function tapSelector(page, cdp, selector, ms = 50) {
+  const c = await centerOf(page, selector);
+  if (!c) throw new Error(`tapSelector: ${selector} is not on screen`);
+  await tap(cdp, c, ms);
+  return c;
+}
+/** The game's own state() snapshot (needs ?debug; boot() adds it). */
+export const gameState = (page) => page.evaluate(() => window.__egg.state());
 
 /** Show a screen through the ui and wait for it to finish fading in. */
 export async function show(page, name, data) {

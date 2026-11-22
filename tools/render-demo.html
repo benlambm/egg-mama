@@ -373,7 +373,7 @@ window.demo = {
   setup, place, run, frame, bench, benchBest, scroll, info, scenes,
   scene: async (name) => { const r = await scenes[name](); return { scene: name, ...r }; },
   jumpTo, cullCheck, readCount, allocTest, heap, column, meanBand, waitPaintings, captionProbe, rockProbe, pillProbe, hashCanvas, fadeCheck,
-  setStatus, setMode: (m) => { mode = m; }, setReduced: (b) => { reduced = !!b; },
+  setStatus, setMode: (m) => { mode = m; }, setReduced: (b) => { reduced = !!b; }, autopilot: (g) => autopilot(g),
   get game() { return game; }, get level() { return level; }, renderer: null,
   enemyAtCheck(samples = 400) {              // the renderer's allocation-free enemyAt must match the sim's enemyPosAt
     const out = { x: 0, y: 0, face: 1 }; let bad = 0;

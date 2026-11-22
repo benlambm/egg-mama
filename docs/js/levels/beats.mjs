@@ -274,7 +274,7 @@ function spikeHop(B, c, w, cycle = null) {
   B.spikeArc(h, { n: 4 });
   return h;
 }
-const spikeW = (c) => rd(clamp(P.spikeW(c.d) + c.rand.range(-1, 1), 18, 34));
+const spikeW = (c) => rd(clamp(P.spikeW(c.d) + c.rand.range(-1, 1), 14, 24));   // takeoff window >= 0.28 s at any difficulty
 
 def('spike1', { needs: 'spikes' }, (B, c) => {
   B.run(30, 'none');
