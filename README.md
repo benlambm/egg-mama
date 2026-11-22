@@ -1,37 +1,93 @@
 # Egg Mama
 
-Guide Egg Mama through 13 pixel-art chapters to recover the scattered clutch and relight the summit beacon. Golden eggs hatch into ducklings that follow Mama and act as extra lives. The game saves at checkpoint flags and chapter transitions in the current browser.
+A landscape, full-screen, touch-first platformer for phones. Egg Mama rolls through **one continuous world** that
+slowly slides by in front of thirteen pixel-art paintings, from the Meadow to the Summit Beacon. One trip takes about
+**an hour**, the difficulty creeps up very gradually, and the player is always moving: you jump, brake and push to
+find your line rather than start and stop. When she reaches the beacon the world turns back into a fresh Meadow and
+you can keep going for ever.
+
+Everything you touch is smooth vector art drawn in code on top of the crisp pixel backgrounds. The music is original
+and synthesised in the browser. There are no downloads, no network calls after the page loads, and no dependencies.
 
 ## Play
 
-Landscape gives you more room to see upcoming gaps on a phone. Mama rolls forward at a steady pace as soon as you start or continue.
+Hold the phone sideways. The world fills the screen; there is no title bar, score header or button footer.
 
-| Input | Action |
+| Gesture | What happens |
 | --- | --- |
-| Swipe up on the game field | Jump |
-| Swipe left or right | Back up or push forward |
-| On-screen arrow and Jump buttons | Hold to steer or jump |
-| A/D or left/right arrows | Steer with a keyboard |
-| Space or Up | Jump with a keyboard |
-| Shift | Sprint |
-| P or Escape | Pause |
-| M | Mute or unmute the soundtrack and effects |
+| Swipe up | Jump |
+| Swipe right | Push ahead (a short burst of speed) |
+| Swipe left | Brake and back up for a moment |
+| Tap (optional, in Settings) | Jump, for the smallest players |
+| Pause button (top right) | Pause menu: Resume, Journal, How to play, Main title |
 
-Choose **Continue** to load the latest checkpoint. **Start Over** on the title screen replaces the saved journey after confirmation.
+Keyboard (for testing on a laptop): Space/Up/W jump, A/D or the arrow keys steer while held, P/Esc pause, M mute.
+
+- **Ordinary eggs** score points and mark a safe route. **Golden eggs** hatch a duckling that follows Mama (up to five).
+- A **shield** absorbs the first hit, then a duckling is lost instead of a life, and with no flock the run ends.
+- **Checkpoint flags** save automatically. After a fall you return to the last flag.
+- **Continue** resumes the last flag; **Retry checkpoint** after a fall; **Start Over** asks first.
+- Rotating the phone upright pauses the game and shows a "turn your phone" prompt.
+- The beacon offers **Keep Going** (a new, tougher circuit that carries your flock, eggs and score) or **Main Title**.
+
+An existing save from the earlier GitHub Pages build (`egg-hero-journey-v1`) still works: Continue opens it.
 
 ## Run locally
 
-The game uses plain HTML, CSS, Canvas, and Web Audio. It has no build step or runtime dependencies.
-
 ```sh
-python3 -m http.server 8080 --directory docs
-node --test
+python3 -m http.server 8080 --directory docs   # then open http://localhost:8080/
+node --test                                    # unit + level-fairness tests (about a minute)
 ```
 
-Open http://localhost:8080/ to play. The tests check swipe classification, forward momentum, jump reach, extra lives, chapter progression, and checkpoint compatibility.
+Add `?debug` to the URL to get `window.__egg` (teleport, fast-forward, force the beacon) for testing.
+
+### More checks
+
+| Command | What it checks |
+| --- | --- |
+| `FULL=1 node --test tests/levels.test.mjs` | A planner bot plays every flag-to-flag segment of three circuits (about 12 minutes) |
+| `node tools/level-report.mjs` | Per-landscape length, pacing, hazards and difficulty ramp of a generated circuit |
+| `node tools/audio-render.mjs` | Renders every song and effect offline and reports loudness, seams and mix margins |
+| `node tests/e2e/*.mjs` | Real Chromium (Playwright) checks of layout, input, rendering, audio lifecycle and the full game |
+
+### Release step
+
+Before every deploy run `node tools/sync-sw.mjs`. It rewrites the file list and version fingerprint in `docs/sw.js`
+so phones that already installed the game pick up the new files (and so offline play includes every file).
+`tests/sw.test.mjs` fails if you forget.
+
+## How it is built
+
+```
+docs/                 the whole deployed site (GitHub Pages serves this folder)
+  index.html style.css manifest.webmanifest sw.js icons/ assets/*.webp (the 13 paintings)
+  js/main.mjs         main loop and screen flow
+  js/sim.mjs          deterministic fixed-step simulation (1/120 s), no browser APIs
+  js/levelgen.mjs     seeded generator for the whole circuit (+ js/levels/*)
+  js/tuning.mjs       every gameplay number in one place
+  js/chapters.mjs     the 13 landscapes: names, palettes, hazards, story, pace
+  js/render.mjs       camera, painted-background dissolve, layers, shadows, effects
+  js/art-actors.mjs   Mama, ducklings, eggs, enemies (vector art, drawn once and stamped)
+  js/art-terrain.mjs  platforms, spikes, springs, gates, beacon, water
+  js/audio.mjs sfx.mjs music.mjs   Web Audio engine, effects and the 15-song score
+  js/input.mjs save.mjs ui.mjs     swipes, saves (with legacy migration), menus
+tests/                unit tests (Node) and e2e checks (Playwright)
+tools/                level report, audio renderer, icon and service-worker helpers
+SPEC.md DESIGN.md     the original requirements and the engineering contract
+```
+
+The world is a pure function of `(journeySeed, circuit)`, so a save is just a seed plus the last flag. The fixed
+step makes the simulation reproducible, which is how the test bot proves every jump is possible.
 
 ## GitHub Pages
 
-Publish from the `main` branch and the `/docs` folder in [Settings → Pages](https://github.com/benlambm/egg-mama/settings/pages). This connects every push to `main` to GitHub Pages. The site files use relative URLs so they can be served from the repository subpath.
+Publish from the `main` branch and the `/docs` folder in
+[Settings → Pages](https://github.com/benlambm/egg-mama/settings/pages). All URLs are relative, so the site works from
+the repository subpath. Saves live in each browser's own storage, so the GitHub Pages and any other host keep separate
+saves.
 
-GitHub Pages and the original Sites build have separate browser saves because they run on different domains.
+## Honest limits
+
+Everything was verified in headless Chromium emulation (touch events, safe areas, rotation, offline). It has **not**
+been run on a physical iPhone or Android phone, in Safari/WebKit, or listened to by a person: do that acceptance pass
+(SPEC.md, "Release acceptance") before trusting it with the kids.
