@@ -121,16 +121,21 @@ class Planner {
     const h0 = g.stats.hits, f0 = g.stats.falls;
     const x0 = g.mama.x;
     const stopX = this.ctx.stopX;
-    let k = 0, lastAct = -1e9, tg = null, tx = Infinity;
+    let k = 0, lastAct = -1e9, tg = null, tx = Infinity, blockRun = 0, blockStart = 0;
+    const home = g.mama.ground;                 // the takeoff habit only joins in once she has landed somewhere NEW
+    let armed = false;
     for (let i = 0; i < steps; i++) {
       while (k < plan.length && plan[k].n === i) { act(g, plan[k].a); lastAct = i; k++; }
-      if (policy && k >= plan.length && g.mama.onGround && i - lastAct >= MIN_GAP_STEPS) {
+      if (policy && !armed && g.mama.onGround && g.mama.ground !== home) armed = true;
+      if (policy && armed && k >= plan.length && g.mama.onGround && i - lastAct >= MIN_GAP_STEPS) {
         const gr = g.mama.ground;
         if (gr !== tg || gr.motion) { tg = gr; tx = takeoffX(g); }
         if (g.mama.x >= tx) { act(g, 'jump'); lastAct = i; }
       }
       step(g, NOHELD);
       if (g.events.length) g.events.length = 0;
+      // pressed against a wall for a quarter of a second: she has stopped rolling, which is trouble from the first moment
+      if (g.mama.vx < 5 && i > 12) { if (!blockRun) blockStart = i + 1; if (++blockRun >= 30) return { fail: blockStart, x: g.mama.x, stuck: true }; } else blockRun = 0;
       if (g.stats.hits > h0 || g.stats.falls > f0 || g.status === 'dead') return { fail: i + 1, x: g.mama.x };
       if (g.status !== 'running' || g.mama.x >= stopX) return { fail: 0, x: g.mama.x, done: true };
     }

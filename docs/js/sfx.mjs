@@ -41,7 +41,7 @@ export const SFX_INFO = Object.freeze({
   goldHatch:    { duration: 0.92, gap: 0.30,  prio: 2, duck: { db: 10, seconds: 0.95 } },
   ducklingLost: { duration: 0.78, gap: 0.30,  prio: 2, duck: { db: 9, seconds: 0.78 } },
   checkpoint:   { duration: 0.72, gap: 0.40,  prio: 2, duck: { db: 8, seconds: 0.72 } },
-  beacon:       { duration: 2.50, gap: 1.00,  prio: 2, duck: { db: 9, seconds: 2.50 } },
+  beacon:       { duration: 2.50, gap: 1.00,  prio: 2, duck: { db: 10, seconds: 2.80 } },
   jump:         { duration: 0.14, gap: 0.08,  prio: 1 },
   land:         { duration: 0.14, gap: 0.08,  prio: 0 },
   stomp:        { duration: 0.18, gap: 0.08,  prio: 1 },

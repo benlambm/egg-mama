@@ -7,15 +7,17 @@
  * starts): each one is kept the first time the game asks for it, and a 'warm' message (main.mjs sends one once play has started) quietly
  * fetches any that are still missing, one at a time, so a whole hour of landscapes works offline.
  *
- * WHEN YOU CHANGE ANY GAME FILE: bump VERSION below. That is what tells phones that already have the game
- * to fetch the new files. If you add or remove a code/art file, update FILES too: tests/sw.test.mjs compares
- * it to what is on disk (installing fails as a whole if one listed file is missing, so the old version
- * keeps working instead of leaving a half-installed one).
+ * AFTER YOU CHANGE ANY GAME FILE (and always as the last step before a release): run
+ *     node tools/sync-sw.mjs
+ * It rewrites FILES (every code/art file on disk) and VERSION (a fingerprint of those files' content). VERSION is
+ * what tells phones that already have the game to fetch the new files, and because it is computed nobody has to
+ * remember to bump it. tests/sw.test.mjs fails while either is stale. Installing fails as a whole if one listed
+ * file is missing, so the old version keeps working instead of leaving a half-installed one.
  */
 // Every copy this game keeps has a name starting with PREFIX. Other games on the same web address
 // (a GitHub Pages user site hosts many) keep copies of their own under other names.
 const PREFIX = 'egg-mama-';
-const VERSION = PREFIX + 'v1';
+const VERSION = PREFIX + 'v-153217ca55';
 
 const FILES = [
   './',
@@ -26,7 +28,9 @@ const FILES = [
   './js/art-terrain.mjs',
   './js/artkit.mjs',
   './js/audio.mjs',
+  './js/background.mjs',
   './js/chapters.mjs',
+  './js/effects.mjs',
   './js/input.mjs',
   './js/levelgen.mjs',
   './js/levels/acts.mjs',
@@ -40,8 +44,11 @@ const FILES = [
   './js/levels/params.mjs',
   './js/levels/phys.mjs',
   './js/main.mjs',
+  './js/music.mjs',
+  './js/render.mjs',
   './js/rng.mjs',
   './js/save.mjs',
+  './js/segments.mjs',
   './js/sfx.mjs',
   './js/sim.mjs',
   './js/tuning.mjs',
@@ -103,7 +110,8 @@ self.addEventListener('fetch', (event) => {
 async function answer(event, request) {
   const cache = await caches.open(VERSION);
   // ignoreSearch: "index.html?utm=…" or "./?sw" is still the same page
-  const hit = await cache.match(request, { ignoreSearch: true });
+  // ignoreVary: a server that adds "Vary: Accept" or similar must never turn a kept file into a miss (offline play would break)
+  const hit = await cache.match(request, { ignoreSearch: true, ignoreVary: true });
   if (hit) return hit;
   try {
     const response = await fetch(request);

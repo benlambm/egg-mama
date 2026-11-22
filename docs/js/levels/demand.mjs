@@ -17,7 +17,9 @@ import { T, clamp } from '../tuning.mjs';
 import { unease } from './params.mjs';
 import { jumpWindow } from './phys.mjs';
 
-const WIN_EASY = 0.76, WIN_SPAN = 0.31;        // a flat gap of 34 u has a 0.757 s window, a gap of 68 u 0.45 s
+/** A thin ledge that only bobs a few units (Reedwater's logs) is analysed like a static one; lifts and movers are not. */
+const moving = (p) => !!p.motion && !(p.kind === 'ledge' && p.motion.amp <= 10);
+const WIN_EASY = 0.69, WIN_SPAN = 0.24;        // a flat gap of 42 u has a 0.68 s window, a gap of 68 u 0.45 s
 const hWindow = (secs) => clamp((20 * (WIN_EASY - secs)) / WIN_SPAN, 0, 20);
 
 /** All events on the main route between x0 and x1: [{ x, h, kind }]. */
@@ -29,15 +31,17 @@ export function eventsIn(level, x0, x1) {
     if (p.kind === 'crumble' && p.x >= x0 && p.x < x1) ev.push({ x: p.x, h: unease(clamp((104 - p.w) / 34, 0, 1)), kind: 'crumble' });
     if (p.kind === 'lift' && p.x >= x0 && p.x < x1) {
       const m = p.motion;
-      ev.push({ x: p.x, h: unease(0.5 * clamp((m.amp - 30) / 22, 0, 1) + 0.5 * clamp((6.4 - m.period) / 2.6, 0, 1)), kind: 'lift' });
+      const h = unease(0.5 * clamp((m.amp - 30) / 22, 0, 1) + 0.5 * clamp((6.4 - m.period) / 2.6, 0, 1));
+      ev.push({ x: p.x, h, kind: 'lift' }, { x: p.x + p.w, h, kind: 'liftexit' });      // a jump on, a jump off
     }
     if (p.kind === 'mover' && p.x >= x0 && p.x < x1) {
       const m = p.motion;
-      ev.push({ x: p.x, h: unease(0.5 * clamp((m.amp - 14) / 16, 0, 1) + 0.5 * clamp((6.2 - m.period) / 2.4, 0, 1)), kind: 'mover' });
+      const h = unease(0.5 * clamp((m.amp - 14) / 16, 0, 1) + 0.5 * clamp((6.2 - m.period) / 2.4, 0, 1));
+      ev.push({ x: p.x, h, kind: 'mover' }, { x: p.x + p.w, h, kind: 'moverexit' });
     }
     const q = plats[i + 1];
     if (!q) continue;
-    if (p.motion || q.motion) continue;                              // lifts / movers have their own event above
+    if (moving(p) || moving(q)) continue;                            // lifts / movers have their own event above
     const gap = q.x - (p.x + p.w), rise = p.y - q.y;
     if (gap <= 0 && rise <= T.stepUp) continue;                      // simply continues (or a drop)
     if (p.x + p.w < x0 || p.x + p.w >= x1) continue;

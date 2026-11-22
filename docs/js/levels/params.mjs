@@ -16,8 +16,11 @@ export const unease = (e) => 20 * Math.pow(clamp(e, 0, 1), 1 / 0.85);
 const at = (a, b, d) => lerp(a, b, ease(d));
 
 export const P = {
-  /** gap width of a required jump (u). The first gaps are 34 (window ~0.7 s), the hardest 68 (window ~0.37 s). */
-  gap: (d) => at(34, 68, d),
+  /**
+   * gap width of a required jump (u). The sim lets her mantle onto a ground island across a gap of up to ~38 u
+   * without jumping, so even the gentlest gap is 42 u (a real jump, window ~0.68 s); the hardest is 68 (window ~0.45 s).
+   */
+  gap: (d) => at(42, 68, d),
   /** landing island after a single gap (ground). */
   landing: (d) => at(230, 84, d),
   /** small ground islands inside gap chains. */
@@ -25,7 +28,7 @@ export const P = {
   /** thin ledges (logs, planks, bridges, steps). */
   ledge: (d) => at(150, 84, d),
   /** safe flat ground between challenges (recovery room). */
-  rest: (d) => at(500, 210, d),
+  rest: (d) => at(340, 120, d),
   /** walkers */
   walkerSpeed: (d) => at(22, 50, d),
   walkerPatrol: (d) => at(170, 104, d),

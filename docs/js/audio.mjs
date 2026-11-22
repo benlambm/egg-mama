@@ -24,22 +24,33 @@
  *   - A note belongs to the bar it STARTS in for `play` purposes; its length may run past the bar line.
  *
  * ── LIFECYCLE (AUDIO-2) ──────────────────────────────────────────────────────────────────────────────────
- *   The context runs only while  unlocked && !muted && !suspended.  suspend()/mute stop the scheduler and
- *   suspend the AudioContext (currentTime freezes), so the song position is KEPT and resume()/unmute simply
- *   continues it. Exactly one scheduler timer exists at any time (token guarded). sfx() and playSong() are
- *   safe at any moment: before unlock, while muted, while suspended, after dispose. playSong remembers the
- *   requested song, so unlocking / unmuting / resuming starts it.
+ *   The context runs only while  unlocked && !muted && !suspended && !hidden.  Stopping fades the master to silence
+ *   over 30 ms and then (80 ms later) suspends the AudioContext, so there is no click and currentTime freezes: the
+ *   song position is KEPT and resume()/unmute simply continues it (coming back inside those 80 ms never suspends at
+ *   all). Exactly one scheduler timer exists at any time (token guarded). sfx() and playSong() are safe at any
+ *   moment: before unlock, while muted, while suspended, after dispose. playSong remembers the requested song, so
+ *   unlocking / unmuting / resuming starts it. The engine also watches visibilitychange / pagehide itself ("hidden")
+ *   as a backstop for AUDIO-2 in case main forgets suspend(); it is a separate flag, so it never un-pauses a game
+ *   that main has suspended: after a hidden page is shown again the music waits for main's resume().
  *
  * ── WIRING IT UP (main.mjs) ──────────────────────────────────────────────────────────────────────────────
- *   const audio = new GameAudio({ muted: settings.muted, songs: SONGS });        // SONGS from music.mjs
- *   - unlock(): on EVERY pointerup / click / keydown (cheap and idempotent). iOS Safari unlocks audio from touchend / click-class gestures; touchstart / pointerdown may not count.
+ *   const audio = new GameAudio({ muted: settings.muted, songs: SONGS });        // SONGS from music.mjs (leave `songs` out and music.mjs is imported on first use)
+ *   - unlock(): on EVERY pointerup / touchend / click / keydown (cheap and idempotent), and BEFORE the same handler calls sfx():
+ *     sfx() is silent until the context exists. iOS Safari unlocks audio from touchend / click-class gestures; touchstart /
+ *     pointerdown may not count, and a swipe may not produce a click.
  *   - audio.playSong('title') on the title screen; the landscape song when 'chapter-enter' arrives (fade 3-4 s);
  *     'beacon' when the beacon lights; playSong(songFor(chapter, circuit), { fade: 0.4 }) after a retry / continue.
+ *     A song change starts the new song at its first step, so call it ONCE per landscape change. If main derives it from Mama's x
+ *     (blendHalf/2 into a landscape) use hysteresis: she can brake and back up across that line, and every re-trigger
+ *     restarts a song from its beginning (the engine caps overlapping songs at 3 and drops inaudible ones, but it cannot
+ *     make a restart sound musical).
  *   - for (const e of drainEvents(game)) audio.handle(e);   (one 'gold' + 'hatch' pair sounds ONCE; 'respawn' is silent)
  *   - audio.sfx('ui') / ('uiBack') for menu buttons. Menus that pause the game are silent: suspend() stops the context.
- *   - suspend() on pause / rotate-away / blur / visibilitychange hidden / pagehide;  resume() when play continues.
- *   - setMuted(b) on the mute button / M key; persist the flag yourself. Muting suspends the context, un-muting resumes
- *     the song exactly where it was (same as pause).
+ *   - suspend() on pause / rotate-away / blur / visibilitychange hidden / pagehide;  resume() when play continues. Call resume() and
+ *     setMuted(false) synchronously inside the tap's handler (the Resume / Tap-to-continue / Sound buttons), not from a timer or
+ *     rAF afterwards: iOS only lets a stopped context start again inside a user gesture (the next unlock() also rescues it).
+ *   - setMuted(b) on the mute button / M key; persist the flag yourself. Muting stops the context like a pause and un-muting
+ *     resumes the song exactly where it was.
  *   - songs are compiled on first use; a malformed song or a browser without Web Audio can never throw into the game.
  *   - lintSong(song) lists what compile would silently drop (use it in tests for music.mjs).
  *   - renderOffline(id, seconds, sampleRate, opts) renders through the same code (tools/audio-render.mjs measures it).
@@ -64,11 +75,14 @@ const RESYNC = 0.25;           // ...and a cursor this far behind jumps straight
 const START_DELAY = 0.06;      // headroom before a new song's first step
 const MUSIC_LEVEL = 0.5;       // music bus trim
 const SFX_LEVEL = 1.0;         // sfx bus level: sfx sit above the music
+const SOFT_STOP = 0.03;        // s: pause / mute ramps the master to silence over this long, THEN suspends the context (a hard stop clicks)
+const SOFT_STOP_MS = 80;       // ...and the context is suspended this many ms after the request (ramp + a render quantum or two)
+const SOFT_START = 0.04;       // s: the way back in
 const DUCK_ATTACK_TC = 0.012; // s, time constant of the dip
 const DUCK_RELEASE_TC = 0.16;  // s, time constant of the swell back
 const MAX_VOICES = 150;        // music notes are dropped (never the sfx) beyond this many live voices
 const MAX_PLAYERS = 3;         // the song playing plus at most two fading out: a caller that keeps changing its mind must not pile up songs
-const INAUDIBLE = 0.02;        // a song this quiet (-34 dB) is dropped on the spot instead of being faded
+const INAUDIBLE = 0.03;        // a song this quiet (-30 dB) is dropped on the spot instead of being faded
 const MAX_SFX_VOICES = 220;
 const NOT_RUNNING_SFX_CAP = 12;// while the context has not started yet, only queue this many voices
 const RESUME_RETRY_TICKS = 40; // ~1 s: if we want sound but the context is not running (iOS 'interrupted'), ask again
@@ -151,6 +165,7 @@ class Graph {
   constructor(ctx, { muted = false, stems = false } = {}) {
     this.ctx = ctx;
     this.voices = new Voices();
+    this.maxVoices = MAX_VOICES;                         // (an offline render lifts this: it schedules whole 4 s chunks at once, not the live 0.2 s lookahead)
     this.cache = {};                                     // sfx PeriodicWaves
     this.noise = makeNoise(ctx);
     this._seed = 0x9e3779b9;
@@ -590,7 +605,7 @@ class SongPlayer {
 
   _fire(ev, t) {
     const g = this.g, L = this.layers[ev.li];
-    if (!L || g.voices.count >= MAX_VOICES) return;
+    if (!L || g.voices.count >= g.maxVoices) return;
     if (ev.hit ? !L.kit : !NOTE[L.inst]) return;            // drum hits on a pitched layer / notes on the kit: ignore
     const v = g.voices.begin();
     try {
@@ -636,7 +651,10 @@ export class GameAudio {
     this._songs = songs && typeof songs === 'object' ? songs : null;   // null = not given: loaded from music.mjs on first use
     this._songsLoading = false;
     this._AC = AudioContextClass; this._OAC = OfflineAudioContextClass;
-    this._timers = timers || { setInterval: (f, ms) => setInterval(f, ms), clearInterval: (id) => clearInterval(id) };
+    this._timers = timers || { setInterval: (f, ms) => setInterval(f, ms), clearInterval: (id) => clearInterval(id),
+      setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (id) => clearTimeout(id) };
+    this._stopTimer = null;                  // pending "suspend the context once the fade-out has played"
+    this._outRamp = null;                    // the master gain's last ramp {t0, from, to, dur}, so a stop or start can continue from where it is
     this._nav = nav || (typeof navigator !== 'undefined' ? navigator : null);
     this._doc = doc || (typeof document !== 'undefined' ? document : null);
     this._win = win || (typeof window !== 'undefined' ? window : null);
@@ -653,6 +671,7 @@ export class GameAudio {
     this._songId = null; this._songFade = 0.4;
     this._streak = 0; this._eggT = -1e9; this._goldT = -1e9;
     this._last = Object.create(null);        // per-cue time of the last play (rate limit)
+    if (!this._songs) this._loadSongs();     // no songs passed in: fetch music.mjs now, so they are ready by the first gesture
   }
 
   get muted() { return this._muted; }
@@ -663,7 +682,7 @@ export class GameAudio {
   /** Call from a user gesture (pointerup / click / keydown). Safe to call again and again. */
   unlock() {
     if (this._disposed) return;
-    try { if (this._nav && this._nav.audioSession) this._nav.audioSession.type = 'playback'; } catch (e) { /* optional */ }
+    try { const as = this._nav && this._nav.audioSession; if (as && as.type !== 'playback') as.type = 'playback'; } catch (e) { /* optional */ }   // iOS: sound even with the silent switch on; set once, not on every gesture
     if (!this._ctx) this._create();
     this._apply(true);
   }
@@ -732,9 +751,8 @@ export class GameAudio {
     if (run) {
       let wake = fromGesture || ctx.state !== 'running';       // a gesture is the one moment iOS lets us start it
       if (this._ctxRunning !== true) {
-        g.out.gain.cancelScheduledValues(now);
-        g.out.gain.setValueAtTime(0, now);
-        g.out.gain.linearRampToValueAtTime(1, now + 0.04);     // no pop when coming back from mute / pause
+        this._clearStopTimer();
+        this._rampOut(g, now, 1, SOFT_START);                  // no pop when coming back from mute / pause (and no dip if the stop was still fading)
         this._ctxRunning = true;
         // We asked for suspend() a moment ago, but `state` only changes once the audio thread has done it. Whatever
         // it says now, the resume must be queued behind that suspend, or the context would end up suspended with
@@ -746,10 +764,43 @@ export class GameAudio {
       this._syncSong();
     } else {
       this._stopScheduler();
-      g.out.gain.cancelScheduledValues(now);
-      g.out.gain.setValueAtTime(0, now);                       // silence immediately
-      if (this._ctxRunning !== false) { this._ctxRunning = false; safe(() => ctx.suspend()); }
+      if (this._ctxRunning !== false) {
+        const live = this._ctxRunning === true && ctx.state === 'running';
+        this._ctxRunning = false;
+        if (live && this._timers.setTimeout) {
+          // Fade the master out first and only then suspend: stopping the audio thread in the middle of a note leaves
+          // a step in the output, which is a click on every pause. (Silent from the very first rendered quantum.)
+          this._rampOut(g, now, 0, SOFT_STOP);
+          this._stopTimer = this._timers.setTimeout(() => { this._stopTimer = null; if (this._ctx === ctx && !this._wantRun) safe(() => ctx.suspend()); }, SOFT_STOP_MS);
+        } else {
+          this._cutOut(g, now);                                // nothing is playing (never started / already suspended): silence and suspend now
+          safe(() => ctx.suspend());
+        }
+      } else if (this._stopTimer === null) this._cutOut(g, now);
     }
+  }
+
+  /** The master gain's level at time t, from the last ramp we set. */
+  _outLevel(t) {
+    const r = this._outRamp;
+    if (!r) return 0;
+    return r.from + (r.to - r.from) * clamp((t - r.t0) / r.dur, 0, 1);
+  }
+  /** Ramp the master gain to `to` over `dur`, starting from wherever it is now. */
+  _rampOut(g, now, to, dur) {
+    const from = this._outLevel(now), p = g.out.gain;
+    p.cancelScheduledValues(now);
+    p.setValueAtTime(from, now);
+    p.linearRampToValueAtTime(to, now + dur);
+    this._outRamp = { t0: now, from, to, dur };
+  }
+  _cutOut(g, now) {
+    g.out.gain.cancelScheduledValues(now);
+    g.out.gain.setValueAtTime(0, now);
+    this._outRamp = { t0: now, from: 0, to: 0, dur: 1 };
+  }
+  _clearStopTimer() {
+    if (this._stopTimer !== null) { try { if (this._timers.clearTimeout) this._timers.clearTimeout(this._stopTimer); } catch (e) { /* ignore */ } this._stopTimer = null; }
   }
 
   _startScheduler() {
@@ -897,6 +948,7 @@ export class GameAudio {
   dispose() {
     if (this._disposed) return;
     this._stopScheduler();
+    this._clearStopTimer();
     this._disposed = true;
     if (this._unwatch) { this._unwatch(); this._unwatch = null; }
     for (const p of this._players) p.dispose();
@@ -919,6 +971,7 @@ export class GameAudio {
     const channels = opts.stems ? 6 : 2;
     const ctx = new OAC(channels, Math.max(1, Math.ceil(seconds * sampleRate)), sampleRate);
     const g = new Graph(ctx, { stems: !!opts.stems });
+    g.maxVoices = Infinity;
     const env = g.sfxEnv();
     const song = opts.music === false ? null : (this._songs || {})[id];
     let player = null;

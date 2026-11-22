@@ -62,6 +62,10 @@ try {
       an.fftSize = 2048; g.out.connect(an);
       window.__an = an; window.__buf = new Float32Array(2048);
     };
+    window.__tail = () => { // the last 32 samples (0.7 ms) the master output produced: after a suspend these are what the speaker was left with
+      const g = window.audio._g, an = window.__tailAn || (window.__tailAn = (() => { const a = g.ctx.createAnalyser(); a.fftSize = 32; g.out.connect(a); return a; })());
+      const b = new Float32Array(32); an.getFloatTimeDomainData(b); let p = 0; for (const v of b) p = Math.max(p, Math.abs(v)); return p;
+    };
     window.__level = () => { // rms and peak of the last 2048 samples (~43 ms)
       window.__an.getFloatTimeDomainData(window.__buf);
       let s = 0, p = 0; for (const v of window.__buf) { s += v * v; p = Math.max(p, Math.abs(v)); }
@@ -92,7 +96,7 @@ try {
   await page.evaluate(() => window.audio.suspend());
   await sleep(500);
   const frozenA = await page.evaluate(() => window.__ctxs[0].currentTime); await sleep(400);
-  const frozenB = await page.evaluate(() => window.__ctxs[0].currentTime);
+  let frozenB = await page.evaluate(() => window.__ctxs[0].currentTime);
   // (an AnalyserNode on a suspended context just keeps its last buffer, so silence is proven by the state and the frozen clock:
   //  a suspended AudioContext renders nothing)
   ok(await page.evaluate(() => window.__ctxs[0].state) === 'suspended', 'suspend() suspends the context');
@@ -101,6 +105,18 @@ try {
   ok(await page.evaluate(() => window.audio.sfx('goldHatch')) === false, 'sfx while suspended do nothing');
   for (let i = 0; i < 5; i++) await page.evaluate(() => { window.audio.resume(); window.audio.resume(); window.audio.suspend(); window.audio.suspend(); });
   ok(await timers() === 0, 'after five suspend/resume rounds ending suspended: still no timer');
+  await sleep(300);
+  ok(await page.evaluate(() => window.__ctxs[0].state) === 'suspended', 'and the context really ends up suspended (the last request wins, however fast they came)');
+  const stormTimes = await page.evaluate(async () => {   // the same storm while RUNNING, ending suspended: the fade-then-suspend path
+    const a = window.audio; a.resume(); await new Promise((r) => setTimeout(r, 400));
+    for (let i = 0; i < 20; i++) { a.suspend(); a.resume(); }
+    for (let i = 0; i < 20; i++) { a.resume(); a.suspend(); }
+    await new Promise((r) => setTimeout(r, 300));
+    return window.__ctxs[0].state;
+  });
+  ok(stormTimes === 'suspended', 'a suspend/resume storm that starts while playing and ends with suspend() leaves it suspended after the fade');
+  ok(await timers() === 0, 'with no scheduler');
+  frozenB = await page.evaluate(() => window.__ctxs[0].currentTime);   // (the storm let the clock run a little: measure the freeze point again)
   await page.evaluate(() => { window.audio.resume(); window.audio.resume(); window.audio.resume(); });
   await sleep(50);
   const resumedT = await page.evaluate(() => window.__ctxs[0].currentTime);
@@ -112,8 +128,13 @@ try {
   ok(resumedT - frozenB < 0.3, `the clock resumed where it froze, so the song continues from the same position (${frozenB.toFixed(2)} -> ${resumedT.toFixed(2)})`);
 
   console.log('mute');
+  await page.evaluate(() => { window.__tail(); });                              // create the tail tap
+  await sleep(100);
+  const loud = await page.evaluate(() => window.__maxLevel(300));
   await page.evaluate(() => window.audio.setMuted(true));
   await sleep(150);
+  const tail = await page.evaluate(() => window.__tail());
+  ok(loud.peak > 0.05 && tail < 1e-4, `the master faded to silence before the context stopped, so there is no click (last samples ${tail.toExponential(1)} against a music peak of ${loud.peak.toFixed(2)})`);
   const m1 = await page.evaluate(() => window.__ctxs[0].currentTime); await sleep(300);
   const m2 = await page.evaluate(() => window.__ctxs[0].currentTime);
   ok(await page.evaluate(() => window.__ctxs[0].state) === 'suspended' && m1 === m2, `mute stops the context within 150 ms (the clock is frozen at ${m2.toFixed(2)})`);
@@ -125,6 +146,28 @@ try {
   await sleep(700);
   const unmuted = await page.evaluate(() => window.__maxLevel(800));
   ok(unmuted.rms > 0.01 && await timers() === 1, `unmute restores the music (rms ${unmuted.rms.toFixed(3)}) with one timer`);
+
+  console.log('page visibility backstop (main.mjs may forget to call suspend())');
+  const setVis = (v) => page.evaluate((state) => { Object.defineProperty(document, 'visibilityState', { value: state, configurable: true }); document.dispatchEvent(new Event('visibilitychange')); }, v);
+  await setVis('hidden');
+  await sleep(200);
+  const h1 = await page.evaluate(() => window.__ctxs[0].currentTime); await sleep(300);
+  const h2 = await page.evaluate(() => window.__ctxs[0].currentTime);
+  ok(await page.evaluate(() => window.__ctxs[0].state) === 'suspended' && h1 === h2, `a hidden page stops the context by itself (clock frozen at ${h2.toFixed(2)})`);
+  ok(await timers() === 0 && await page.evaluate(() => window.audio.sfx('egg')) === false, 'and the scheduler is gone and sfx do nothing');
+  for (let i = 0; i < 10; i++) { await setVis('visible'); await setVis('hidden'); }
+  ok(await timers() === 0, 'a visibilitychange storm leaves no scheduler running while hidden');
+  await setVis('visible');
+  await sleep(700);
+  ok(await page.evaluate(() => window.__ctxs[0].state) === 'running' && await timers() === 1, 'visible again: the context runs again with exactly one scheduler');
+  const shown = await page.evaluate(() => window.__maxLevel(800));
+  ok(shown.rms > 0.01, `and the music continues (rms ${shown.rms.toFixed(3)})`);
+  await page.evaluate(() => { window.audio.suspend(); });
+  await setVis('hidden'); await setVis('visible'); await sleep(300);
+  ok(await page.evaluate(() => window.__ctxs[0].state) === 'suspended' && await timers() === 0, 'a game paused by main stays silent when the page is shown again');
+  await page.evaluate(() => window.audio.resume());
+  await sleep(500);
+  ok(await page.evaluate(() => window.__ctxs[0].state) === 'running' && await timers() === 1, "until main's own resume()");
 
   console.log('songs and sfx');
   const players = () => page.evaluate(() => window.audio.stats.players);

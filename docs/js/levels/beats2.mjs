@@ -88,16 +88,15 @@ def('moverFerry', { needs: 'mover' }, (B, c) => {
 /** A lift that leads onto a crumbling ledge: step on, then jump on to solid ground before it gives way. */
 def('liftCrumble', { needs: 'liftCrumble' }, (B, c) => {
   const { rand, d } = c;
-  const mk = B.mark();
-  const { L, E: _E } = liftUp(B, c, { exitKind: 'crumble', exitW: crumbleWidth(c) });
+  liftUp(B, c, { exitKind: 'crumble', exitW: crumbleWidth(c) });
   const Cr = B.cur;
-  void _E; void L;
   const gap = rd(clamp(P.crumbleGap(d) + rand.range(-3, 3), 24, 44));
   const G2 = B.plat('ground', Cr.x + Cr.w + gap, Cr.y - rd(rand.range(0, 8)), rd(rand.range(220, 300)));
   const res = trainFeasible([stat(Cr), stat(G2)], { minSecs: 0.2 });
   // from the lift she can land anywhere along the ledge's first ~45 u: every one of those must still be saveable
-  if (!res.ok || !res.goodSpan(0, Cr.x - 6, Cr.x + 42)) { B.fail('liftCrumble'); void mk; return; }
+  if (!res.ok || !res.goodSpan(0, Cr.x - 6, Cr.x + 42)) { B.fail('liftCrumble'); return; }
   B.tag('liftCrumble', Cr.x);
+  B.tag('crumble', Cr.x);
   B.arc(res.takeoffs[0], Cr.y, G2.y - Cr.y, 4, { goldMid: rand.chance(0.3) });
   B.setCursor(G2);
   B.runEggs(G2.x + 20, B.x, B.y, 'line');
@@ -110,7 +109,7 @@ def('liftDescent', { needs: 'liftCrumble' }, (B, c) => {
   const { rand, d } = c;
   const steps = 2;
   const specs = [];
-  for (let i = 0; i < steps; i++) specs.push({ gap: rd(rand.range(0, 20)), w: rd(rand.range(150, 200)), dy: -rd(rand.range(36, 46)) });
+  for (let i = 0; i < steps; i++) specs.push({ gap: rand.chance(0.5) ? 0 : rd(rand.range(30, 40)), w: rd(rand.range(150, 200)), dy: -rd(rand.range(36, 46)) });
   B.train(specs);
   if (B.bad) return;
   B.run(160, 'line');

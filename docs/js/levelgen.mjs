@@ -4,6 +4,12 @@
  *   generateLevel({ circuit, seed }) -> ONE Level: all 13 landscapes of one circuit in a single coordinate space.
  *   levelSeed(journeySeed, circuit)  -> the uint32 seed of that circuit.
  *
+ * The Level follows the format in sim.mjs's header, plus these additions (all optional for consumers):
+ *   platform.o = 1     an OPTIONAL platform (upper route / alcove / branch ledge): never required to finish
+ *   cues[].kind        'story' (landscape opening) | 'trail' (a chapter.trail line) | 'tip' (a lesson, just before its first use)
+ *   acts[]             { ch, id, role, x0, x1, d0, d1 }: the acts of the world (for the level report / tests)
+ *   water              always { y: 330 }; the renderer draws it only in landscapes whose chapter says `water`
+ *
  * Pure and deterministic (seeded rng only; no Math.random, no Date). The structure:
  *   levels/phys.mjs      what one swipe can reach (windows, chains, spikes, springs), checked against the sim
  *   levels/params.mjs    how demands scale with difficulty()
@@ -13,12 +19,12 @@
  *   levels/cues.mjs      story captions, trail lines and tips
  *   levels/demand.mjs    a geometry-only measure of how demanding a stretch is (tests / report)
  */
-import { T, clamp, lerp } from './tuning.mjs';
+import { T, clamp } from './tuning.mjs';
 import { rng, mixSeed } from './rng.mjs';
 import { CHAPTERS, difficulty } from './chapters.mjs';
 import { Builder, Y0 } from './levels/builder.mjs';
 import { assemble } from './levels/assemble.mjs';
-import { ACTS, PLAN, POOLS, ROLE_OFFSET, runStages, fillTo } from './levels/acts.mjs';
+import { ACTS, PLAN, ROLE_OFFSET, runStages, fillTo, actIntro } from './levels/acts.mjs';
 import { placeCues } from './levels/cues.mjs';
 
 /** The seed of circuit `circuit` of a journey. */
@@ -30,24 +36,26 @@ const FLAG_OFFSET = 300;           // every landscape's first flag sits this far
 const JOIN = 300;                  // safe ground before a landscape boundary (the dissolve happens over it)
 const OPEN_LEN = 1050;             // hazard-free stretch from the boundary (>= 700 required)
 
-/** Which acts a landscape uses. Circuit 1 follows the teaching order; later circuits draw fresh arrangements. */
+/**
+ * Which acts a landscape uses. Circuit 1 follows the teaching order (each lesson once, alone, then grown). Later
+ * circuits keep every landscape's opening, signature lesson, breather, set piece and closing but redraw the
+ * 'recall', 'vary' and 'combine' slots from the library (every element is known by then), skipping anything used
+ * in the last couple of landscapes (`recent` is the ring buffer), so each repeat has a fresh arrangement. A landscape
+ * only borrows from elements up to four landscapes ahead of it (its 'recall' act from elements no newer than its own
+ * landscape), so Meadow never grows lifts or ice and a join never opens with something heavier than what came before.
+ */
 function planFor(i, circuit, rand, recent) {
   const base = PLAN[i];
   if (circuit < 2) return base.slice();
-  // keep opening, teach (signature), set piece, closing; reshuffle the in-between slots from other landscapes' acts of the same role
   const roleOf = (id) => ACTS[id].role;
-  const pool = (role) => Object.keys(ACTS).filter((id) => roleOf(id) === role && id !== 'open' && id !== 'close' && id !== 'summitClose' && !/^(goldenHill|snailFirst)$/.test(id));
+  const library = Object.keys(ACTS);
   const plan = base.slice();
-  const varied = ['recall', 'vary', 'combine'];
-  for (const role of varied) {
+  for (const role of ['recall', 'vary', 'combine']) {
     const slot = plan.findIndex((id) => roleOf(id) === role);
     if (slot < 0) continue;
-    // only draw acts whose elements this circuit already knows (everything), preferring ones from nearby landscapes
-    const candidates = pool(role).filter((id) => id !== plan[slot]);
+    const candidates = library.filter((id) => roleOf(id) === role && !plan.includes(id) && !recent.includes(id) && actIntro(id) <= (role === 'recall' ? i : i + 4));
     if (candidates.length) plan[slot] = candidates[rand.int(0, candidates.length - 1)];
   }
-  // keep the signature "teach" act of this landscape but at the later circuits make it the 'vary' one: swap in a fresh teach
-  void recent;
   return plan;
 }
 
@@ -91,6 +99,7 @@ export function generateLevel({ circuit = 1, seed = 1 } = {}) {
     // ── the acts ──
     const plan = planFor(i, circuit, land, recent).filter((id) => id !== 'open');
     const endTarget = last ? x1 + FLAG_OFFSET - 480 - 260 - 100 : x1 - JOIN;    // where the last act stops
+    B.joinFlagX = last ? endTarget + 300 : x1 + FLAG_OFFSET;
     let remaining = plan.reduce((s, id) => s + ACTS[id].w, 0);
     const landActs = [];
     for (const id of plan) {
@@ -101,15 +110,18 @@ export function generateLevel({ circuit = 1, seed = 1 } = {}) {
       const off = ROLE_OFFSET[act.role] ?? 0;
       const dAt = (x) => Math.max(0, dBase(x) + off);
       const c = { rand: land, ch: i, circuit, d: dAt(ax0), k: 0 };
-      const markPlats = B.plats.length;
-      runStages(B, c, act, ax0, ax1, dAt, id === plan[plan.length - 1]);      // the last act must end before the join
+      B.iceMode = CHAPTERS[i].ice === true && act.role !== 'recall';      // Frostline's climb is slippery from its first lesson on
+      const lastAct = id === plan[plan.length - 1];
+      // the last act ends before the join; every earlier act leaves it at least ~1700 u (15 s) so a closing is never a stub
+      runStages(B, c, act, ax0, ax1, dAt, lastAct, lastAct ? endTarget : endTarget - 1700);
       fillTo(B, ax1);                                  // pad out the budget with easy ground (with a flag if one is due)
-      landActs.push({ ch: i, id, role: act.role, x0: ax0, x1: B.x, d0: dAt(ax0), d1: dAt(B.x), p0: markPlats });
-      recent.push(id); if (recent.length > 3) recent.shift();
+      landActs.push({ ch: i, id, role: act.role, x0: ax0, x1: B.x, d0: dAt(ax0), d1: dAt(B.x) });
+      recent.push(id); if (recent.length > 18) recent.shift();       // ring buffer of the last ~2 landscapes' templates
     }
     acts.push(...landActs);
     landscapes.push({ index: i, x0, x1, open: [openStart, bound.openEnd], acts: landActs.length });
     if (last) break;
+    B.iceMode = false;
     // ── tail: safe ground up to the next boundary ──
     fillTo(B, x1);
     x0 = x1;

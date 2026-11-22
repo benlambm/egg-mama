@@ -11,8 +11,8 @@
  */
 import { T, clamp, lerp } from '../tuning.mjs';
 import { Y0 } from './builder.mjs';
-import { P } from './params.mjs';
-import { BEATS, rest } from './beats.mjs';
+import { P, ELEMENT_INTRO } from './params.mjs';
+import { BEATS, rest, dropPickups } from './beats.mjs';
 import './beats2.mjs';
 import './beats3.mjs';  // crown, hillTop (set-piece flourishes)
 
@@ -21,21 +21,21 @@ export const ROLE_OFFSET = { opening: -0.3, recall: -0.6, teach: -0.4, vary: 0.0
 const S = (w, ...pool) => ({ w, pool });
 const Q = (w, ...seq) => ({ w, seq });
 
-/** id -> { role, w (relative length), stages, needs: [elements used] } */
+/** id -> { role, w (relative length), stages, flag?, finale? }. Stage = S(share, ...specs) pool, or Q(share, ...specs) sequence. */
 export const ACTS = {
-  // ───── openings / breathers / closings shared by all landscapes (custom runners below) ─────
+  // ───── openings / breathers / closings shared by landscapes ─────
   open: { role: 'opening', w: 1.0, stages: [] },                       // built by levelgen: the join, the flag and the quiet stretch
   breather: { role: 'breather', w: 1.6, flag: true, stages: [Q(1, 'upper', 'eggField', 'goldenPatch', 'eggField')] },
   breather2: { role: 'breather', w: 1.5, flag: true, stages: [Q(1, 'treasure', 'eggField', 'goldenPatch', 'hills')] },
-  close: { role: 'closing', w: 1.5, flag: true, stages: [S(0.5, 'hills', 'runEggs'), S(0.5, 'gap1', 'upper', 'hills')] },
+  close: { role: 'closing', w: 1.5, flag: true, stages: [S(0.5, 'gap1', 'runEggs'), S(0.5, 'gap1', 'upper', 'gapPair')] },
 
   // ───── Meadow: jump, gap, eggs ─────
   gapsTeach: { role: 'teach', w: 3.0, stages: [S(0.28, 'gap1'), S(0.4, 'gap1', 'gap1', 'stepUp'), S(0.32, 'gap1', 'gapPair')] },
-  stepsAct: { role: 'vary', w: 3.0, stages: [S(0.3, 'stepUp', 'hills'), S(0.4, 'stepUp', 'stairs', 'gap1'), S(0.3, 'stairs', 'gapPair')] },
+  stepsAct: { role: 'vary', w: 3.0, stages: [S(0.3, 'stepUp', 'stairs'), S(0.4, 'stepUp', 'stairs', 'gap1'), S(0.3, 'stairs', 'gapPair')] },
   ledgeHops: { role: 'vary', w: 3.4, stages: [S(0.3, 'upper'), S(0.4, 'upper', 'gap1', 'stepUp'), S(0.3, 'upper', 'gapPair')] },
   gapRhythm: { role: 'combine', w: 3.4, stages: [S(0.3, 'gapPair', 'gap1'), S(0.4, 'gapChain', 'gap1', 'upper'), S(0.3, 'gapChain', 'gapPair')] },
   goldenHill: { role: 'setpiece', w: 3.0, stages: [Q(1, 'hillTop', 'gapPair', 'hillTop', 'upper', 'hillTop')], finale: ['crown'] },
-  snailFirst: { role: 'closing', w: 2.2, flag: true, stages: [S(0.5, 'gap1', 'runEggs', 'stepUp'), S(0.5, 'walker1', 'runEggs')] },
+  snailFirst: { role: 'closing', w: 2.2, flag: true, stages: [S(0.45, 'gap1', 'runEggs', 'stepUp'), Q(0.55, 'walker1', 'gap1', 'walker1')] },
 
   // ───── Clover Mill: read a patrolling snail ─────
   recallGaps: { role: 'recall', w: 2.0, stages: [S(0.5, 'gap1', 'stepUp'), S(0.5, 'gapPair', 'upper')] },
@@ -54,8 +54,8 @@ export const ACTS = {
   // ───── Orchard Heights: springs to the branches ─────
   recallLogs: { role: 'recall', w: 2.0, stages: [S(0.5, 'logs', 'upper'), S(0.5, 'gapPair', 'walker1')] },
   springTeach: { role: 'teach', w: 3.4, stages: [S(0.34, 'springLedge'), S(0.36, 'springLedge', 'springGap'), S(0.3, 'springTwo', 'springLedge')] },
-  springVary: { role: 'vary', w: 3.4, stages: [S(0.3, 'springGap', 'springLedge'), S(0.4, 'springTwo', 'springGap', 'walker1'), S(0.3, 'springLedge+gap1', 'springTwo')] },
-  blossomBounce: { role: 'setpiece', w: 3.4, stages: [Q(1, 'springLedge', 'springTwo', 'springGap+springLedge', 'springTwo', 'springGap+springTwo')], finale: ['crown'] },
+  springVary: { role: 'vary', w: 3.4, stages: [S(0.3, 'springGap+gap1', 'springLedge'), S(0.4, 'springTwo', 'springGap+walker1', 'springLedge+gapPair'), S(0.3, 'springLedge+gap1', 'springTwo+logs')] },
+  blossomBounce: { role: 'setpiece', w: 3.4, stages: [Q(1, 'springLedge', 'springGap+springLedge', 'springTwo+gap1', 'springGap+gapPair', 'springTwo+walker1')], finale: ['crown'] },
   orchardCombine: { role: 'combine', w: 3.2, stages: [S(0.3, 'springLedge', 'logs'), S(0.4, 'springGap+walker1', 'springTwo', 'logs+springGap'), S(0.3, 'walkerIsland+springGap', 'springTwo')] },
 
   // ───── Amber Quarry: crumbling ledges ─────
@@ -68,9 +68,9 @@ export const ACTS = {
   // ───── Fogwood: flying moths ─────
   recallCrumbles: { role: 'recall', w: 2.0, stages: [S(0.5, 'crumbleBridge', 'walker1'), S(0.5, 'crumbleUpper', 'logs')] },
   mothTeach: { role: 'teach', w: 3.4, stages: [S(0.34, 'flyerHigh'), S(0.36, 'flyerHigh', 'flyer1'), S(0.3, 'flyer1', 'flyerPair')] },
-  mothVary: { role: 'vary', w: 3.4, stages: [S(0.3, 'flyer1', 'flyerHigh', 'upper'), S(0.4, 'flyer1+gap1', 'flyerPair', 'logs'), S(0.3, 'flyerPair', 'flyer1+gapPair')] },
+  mothVary: { role: 'vary', w: 3.4, stages: [S(0.3, 'flyer1', 'flyerHigh+flyer1'), S(0.4, 'flyer1+gap1', 'flyerPair', 'flyerHigh+gap1'), S(0.3, 'flyerPair', 'flyer1+gapPair')] },
   mothLanterns: { role: 'setpiece', w: 3.4, stages: [Q(1, 'flyer1', 'flyerPair', 'flyer1+gap1', 'flyerHigh+flyer1', 'flyerPair')], finale: ['crown'] },
-  mothCombine: { role: 'combine', w: 3.2, stages: [S(0.3, 'flyer1', 'logs'), S(0.4, 'flyer1+walker1', 'crumbleChain', 'flyerPair+gap1'), S(0.3, 'flyer1+crumbleBridge', 'walkerIsland')] },
+  mothCombine: { role: 'combine', w: 3.4, stages: [S(0.3, 'flyer1', 'flyerHigh+flyer1'), S(0.4, 'flyer1+walker1', 'flyerPair+gap1', 'flyer1+crumbleChain'), S(0.3, 'flyer1+crumbleBridge', 'flyerPair+flyer1')] },
 
   // ───── Ember Canyon: gap then spikes ─────
   recallMoths: { role: 'recall', w: 2.0, stages: [S(0.5, 'flyer1', 'gap1'), S(0.5, 'flyerHigh', 'crumbleBridge')] },
@@ -89,9 +89,9 @@ export const ACTS = {
   // ───── Lantern Caverns: lift -> crumble ─────
   recallLifts: { role: 'recall', w: 2.0, stages: [S(0.5, 'liftRide', 'crumbleBridge'), S(0.5, 'liftClimb', 'upper')] },
   liftCrumbleTeach: { role: 'teach', w: 3.4, stages: [S(0.34, 'liftCrumble'), S(0.36, 'liftCrumble', 'liftRide'), S(0.3, 'liftCrumble', 'crumbleChain')] },
-  liftCrumbleVary: { role: 'vary', w: 3.4, stages: [S(0.3, 'liftCrumble', 'crumbleUpper'), S(0.4, 'liftCrumble', 'crumbleChain', 'flyer1'), S(0.3, 'liftCrumble', 'liftClimb')] },
+  liftCrumbleVary: { role: 'vary', w: 3.4, stages: [S(0.3, 'liftCrumble', 'liftCrumble+gap1'), S(0.4, 'liftCrumble', 'liftCrumble+flyer1', 'liftCrumble+crumbleChain'), S(0.3, 'liftCrumble', 'liftCrumble+crumbleUpper')] },
   crystalDescent: { role: 'setpiece', w: 3.4, stages: [Q(1, 'liftDescent', 'liftCrumble', 'liftDescent', 'crumbleChain', 'liftCrumble+crumbleBridge')], finale: ['crown'] },
-  caveCombine: { role: 'combine', w: 3.2, stages: [S(0.3, 'liftCrumble', 'spike1'), S(0.4, 'liftCrumble+gap1', 'crumbleChain+flyer1', 'liftDescent'), S(0.3, 'liftCrumble', 'spikeGap+crumbleBridge')] },
+  caveCombine: { role: 'combine', w: 3.4, stages: [S(0.3, 'liftCrumble', 'liftCrumble+spike1'), S(0.4, 'liftCrumble+gap1', 'liftCrumble+flyer1', 'liftDescent+liftCrumble'), S(0.3, 'liftCrumble+crumbleBridge', 'liftCrumble+spikeGap')] },
 
   // ───── Frostline: ice ─────
   recallCaves: { role: 'recall', w: 2.0, stages: [S(0.5, 'liftCrumble', 'crumbleChain'), S(0.5, 'liftRide', 'spike1')] },
@@ -115,12 +115,12 @@ export const ACTS = {
   bridgeCombine: { role: 'combine', w: 3.2, stages: [S(0.3, 'bridge', 'flyer1'), S(0.4, 'bridge+spike1', 'crumbleChain', 'bridge+flyer1'), S(0.3, 'bridge', 'moverFerry+bridge')] },
 
   // ───── Beacon Summit: springs, lifts and timed jumps ─────
-  recallBridges: { role: 'recall', w: 2.0, stages: [S(0.5, 'bridge', 'springLedge'), S(0.5, 'liftRide', 'upper')] },
-  summitTeach: { role: 'teach', w: 3.4, stages: [S(0.3, 'springGap+gap1', 'springLedge'), S(0.4, 'liftRide+gap1', 'springTwo+gapPair', 'springGap+liftRide'), S(0.3, 'liftClimb', 'springGap+gapPair')] },
-  summitVary: { role: 'vary', w: 3.4, stages: [S(0.3, 'springGap+liftRide', 'gapChain+springGap'), S(0.4, 'liftRide+gapPair', 'springLedge+gap1', 'moverFerry+gap1'), S(0.3, 'springTwo+gapChain', 'liftCrumble+gap1')] },
-  summitClimb: { role: 'setpiece', w: 3.6, stages: [Q(1, 'springGap+liftRide', 'liftRide+gapChain', 'crumbleChain+springLedge', 'moverFerry+gap1', 'liftRide+spike1', 'springTwo+gapPair')], finale: ['crown'] },
-  summitCombine: { role: 'combine', w: 3.2, stages: [S(0.3, 'springGap+walker1', 'liftRide+spike1'), S(0.4, 'liftRide+gapChain', 'crumbleChain+springGap+gap1', 'moverFerry+spike1'), S(0.3, 'liftCrumble+springGap', 'bridge+spikeRow')] },
-  summitClose: { role: 'closing', w: 1.6, flag: true, stages: [S(0.5, 'upper', 'gap1', 'hills'), S(0.5, 'springGap', 'liftRide', 'runEggs')] },
+  recallBridges: { role: 'recall', w: 2.0, stages: [S(0.5, 'bridge', 'gapPair'), S(0.5, 'gapChain', 'upper')] },
+  summitTeach: { role: 'teach', w: 3.4, stages: [Q(1, 'springGap+liftRide', 'liftRide+gap1', 'springLedge+gap1', 'liftClimb', 'springGap+gapPair')] },
+  summitVary: { role: 'vary', w: 3.4, stages: [S(0.35, 'springGap+liftRide', 'liftRide+springLedge'), S(0.35, 'liftClimb+springGap', 'liftRide+gapPair', 'springTwo+liftRide'), S(0.3, 'springLedge+liftRide', 'liftCrumble+springGap')] },
+  summitClimb: { role: 'setpiece', w: 3.6, stages: [Q(1, 'springGap+liftRide', 'liftClimb', 'springTwo+liftRide', 'liftRide+springGap+gap1', 'liftClimb+springLedge', 'liftRide+springGap+gapPair')], finale: ['crown'] },
+  summitCombine: { role: 'combine', w: 3.2, stages: [S(0.3, 'liftRide+springGap+walker1', 'liftClimb+spike1'), S(0.4, 'springTwo+liftRide+gap1', 'liftRide+springGap+gapPair', 'moverFerry+springGap+liftRide'), S(0.3, 'liftCrumble+springGap+gap1', 'liftClimb+springLedge')] },
+  summitClose: { role: 'closing', w: 1.6, flag: true, stages: [S(0.5, 'upper', 'gap1', 'gapPair'), S(0.5, 'springGap', 'liftRide', 'gap1')] },
 };
 
 /**
@@ -144,21 +144,28 @@ export const PLAN = [
   ['open', 'recallBridges', 'summitTeach', 'breather2', 'summitVary', 'summitClimb', 'summitCombine', 'summitClose'],
 ];
 
-/** For circuits >= 2: per landscape, which acts may replace the 'recall', 'vary' and 'combine' slots. */
-export const POOLS = PLAN.map((plan) => ({ recall: plan[1], teach: plan[2], vary: plan[4], set: plan[5], combine: plan[6] }));
+/** The landscape index where the newest element an act uses is first taught (circuit 1 order): its 'level' in the curriculum. */
+export function actIntro(id) {
+  const act = ACTS[id];
+  const specs = [...(act.finale || []), ...act.stages.flatMap((st) => st.pool || st.seq || [])];
+  let lvl = 0;
+  for (const spec of specs) for (const part of spec.split('+')) lvl = Math.max(lvl, ELEMENT_INTRO[BEATS[part].needs] ?? 0);
+  return lvl;
+}
 
 /* ───────────────────────── running an act ───────────────────────── */
 
-const FLAG_EVERY = 1500;            // u of main route after a flag before the next one is due (~14 s)
-const FLAG_MAX = 3000;              // never more than this (~27 s) between flags: the rule is 35 s
+const FLAG_EVERY = 2500;            // u of main route after a flag before the next one is due (~23 s)
+const FLAG_MAX = 2900;              // try not to go beyond this (~26 s) between flags
+const FLAG_HARD = 3100;             // never beyond this when a spec ends: the next flag is then <= 3100 + ~640 u (34 s) away; the rule is 35 s
 const lastFlag = (B) => (B.cps.length ? B.cps[B.cps.length - 1].x : -1e9);
 
-/** Flat ground up to x, with a flag in the middle if the last one is far behind (used to pad out an act). */
+/** Flat ground up to x, with a flag in it if the last one is far behind (used to pad out an act). */
 export function fillTo(B, x) {
   while (x - B.x > 120) {
     const room = x - B.x;
-    if (B.x - lastFlag(B) > 1200 && room > 800) { B.station({ after: Math.min(420, room - 280 - 260) }); continue; }
-    B.run(Math.min(room, 1100), 'auto');
+    if (B.x - lastFlag(B) > 1100 && room >= 380) { B.station({ before: 260, after: Math.min(420, room - 260) }); continue; }
+    B.run(Math.min(room, room > 1500 ? 900 : room), 'auto');
   }
   if (x - B.x > 0) B.run(x - B.x, 'line');
 }
@@ -168,19 +175,32 @@ function runSpec(B, c, spec, limit) {
   const parts = spec.split('+');
   for (let attempt = 0; attempt < 2; attempt++) {
     const mk = B.mark();
-    if (attempt === 1) B.station({ after: 400 });
+    let flagged = false;
+    if (attempt === 1) { const sx = B.x; B.station({ after: 420 }); dropPickups(B, c, sx, B.x); flagged = true; }
     for (let i = 0; i < parts.length; i++) {
       const beat = BEATS[parts[i]];
       if (!beat) throw new Error('unknown beat ' + parts[i]);
-      if (i === 0 && B.x - lastFlag(B) > FLAG_EVERY) B.station({ after: 400 });
-      rest(B, c, i === 0 ? 1 : 0.42, i === 0 ? 280 : 200);
-      if (i === 0 && B.x - B.lastGold > 5200 && c.d !== undefined) { BEATS.goldenPatch.fn(B, c); B.run(200, 'line'); }   // keep the golden eggs coming (about one per 40-50 s)
+      // a flag that is due takes the place of the usual recovery room (it has the same safe ground around it)
+      if (i === 0 && !flagged && B.x - lastFlag(B) > FLAG_EVERY) { const sx = B.x; B.station({ after: 420 }); dropPickups(B, c, sx, B.x); flagged = true; }
+      if (!(i === 0 && flagged)) rest(B, c, i === 0 ? 1 : 0.42, i === 0 ? 230 : 170);
+      if (i === 0 && B.x - B.lastGold > 4400) { BEATS.goldenPatch.fn(B, c); B.run(200, 'line'); }   // keep the golden eggs coming (about one per 40-50 s)
       beat.fn(B, c);
       if (B.bad) break;
     }
-    const dyBad = Math.abs(B.y - Y0) > 30;
+    // every main-route platform stays in the readable band (y 150..310, lifts' sweeps inside 130..340), and she ends near the usual height
+    let dyBad = Math.abs(B.y - Y0) > 30;
+    for (let k = mk.p; k < B.plats.length && !dyBad; k++) {
+      const p = B.plats[k];
+      if (p.o) continue;
+      const amp = p.motion && p.motion.axis === 'y' ? p.motion.amp : 0;
+      if (p.y < 156 || p.y > 308 || p.y - amp < 134 || p.y + amp > 336) dyBad = true;
+    }
     if (B.bad || B.x > limit || dyBad) { B.rollback(mk); return false; }
-    if (B.x - lastFlag(B) > FLAG_MAX && attempt === 0) { B.rollback(mk); continue; }   // too long without a flag: flag first, then rebuild
+    const far = B.x - lastFlag(B);
+    // too long without a flag: flag first, then rebuild. Near the landscape's end the next flag is the one at the join.
+    const toJoin = B.joinFlagX - B.x;
+    if (attempt === 0 && (far > FLAG_MAX || (toJoin < 1100 && B.joinFlagX - lastFlag(B) > 3300))) { B.rollback(mk); continue; }
+    if (far > FLAG_HARD || (toJoin < 1100 && B.joinFlagX - lastFlag(B) > 3650)) { B.rollback(mk); return false; }
     return true;
   }
   return false;
@@ -191,15 +211,15 @@ function runSpec(B, c, spec, limit) {
  * dAt(x). Pool stages draw random specs until their share of the length is used; sequence stages (set pieces)
  * play their specs in order, cycling, and every act can end with a `finale` (e.g. the golden crown).
  */
-export function runStages(B, c, act, x0, x1, dAt, strict = false) {
+export function runStages(B, c, act, x0, x1, dAt, strict = false, hardLimit = Infinity) {
   const total = act.stages.reduce((s, st) => s + st.w, 0) || 1;
   let acc = 0, last = '';
-  if (act.flag) B.station({ after: 380 });
+  if (act.flag || B.x - lastFlag(B) > 1900) { const sx = B.x; B.station({ after: 400 }); dropPickups(B, c, sx, B.x); }      // an act that is far from the last flag starts on one
   for (let si = 0; si < act.stages.length; si++) {
     const st = act.stages[si];
     acc += st.w;
     const end = x0 + ((x1 - x0) * acc) / total;
-    const limit = si === act.stages.length - 1 ? (strict ? x1 : x1 + 1300) : (strict ? Math.min(end + 800, x1) : end + 1100);
+    const limit = Math.min(hardLimit, si === act.stages.length - 1 ? (strict ? x1 : x1 + 1300) : (strict ? Math.min(end + 800, x1) : end + 1100));
     let guard = 0, idx = 0, misses = 0;
     while (B.x < end - 300 && guard++ < 80 && misses < 3) {
       c.k = clamp((B.x - x0) / (x1 - x0), 0, 1);
@@ -220,7 +240,7 @@ export function runStages(B, c, act, x0, x1, dAt, strict = false) {
       if (!done) misses++;
     }
   }
-  if (act.finale) for (const spec of act.finale) { c.k = 1; c.d = dAt(B.x); runSpec(B, c, spec, strict ? x1 : x1 + 1500); }
+  if (act.finale) for (const spec of act.finale) { c.k = 1; c.d = dAt(B.x); runSpec(B, c, spec, Math.min(hardLimit, strict ? x1 : x1 + 1500)); }
 }
 
 export { BEATS, Y0, P, T, lerp };

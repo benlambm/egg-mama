@@ -37,6 +37,10 @@ import { T } from './tuning.mjs';
 const SCREENS = ['title', 'pause', 'dead', 'finish', 'rotate', 'journal', 'help', 'reset-confirm'];
 const SHEETS = new Set(['journal', 'help', 'reset-confirm']);   // open over another screen; closing returns to it
 const FADE_MS = 240;                                           // keep in sync with --fade in style.css
+// "Oh no!" and "The beacon is lit!" pop up in the middle of play, while a child may be tapping like mad (tap-to-jump is
+// on). Presses on their buttons in the first moments are those leftover taps, not a choice: ignore them.
+const GUARDED = new Set(['dead', 'finish']);
+const GUARD_MS = 320;
 
 /* ───────────────────────── small helpers ───────────────────────── */
 
@@ -463,6 +467,8 @@ export function createUI({ root, onAction = () => {} } = {}) {
   let pauseWanted = false;
   let muted = false, tapToJump = true;
   let journalPick = null;
+  let openedAt = -1e9;                  // when the current screen came up (performance.now), for the GUARD_MS rule
+  let readyArmed = false;               // a finger went down on the rotate screen AFTER it said "Tap to continue"
   const last = {};                      // last data each screen was shown with
 
   const ctx = (name, data) => ({ name, data, last, baseData: base ? base.data : null, muted, tapToJump, canFullscreen });
@@ -494,7 +500,9 @@ export function createUI({ root, onAction = () => {} } = {}) {
     const el = els[name];
     if (name === 'rotate') {
       if (!el.firstChild) el.innerHTML = buildRotate();
-      el.dataset.phase = data.phase === 'ready' ? 'ready' : 'prompt';
+      const phase = data.phase === 'ready' ? 'ready' : 'prompt';
+      if (el.dataset.phase !== phase) readyArmed = false;        // a touch that began under the other message does not count
+      el.dataset.phase = phase;
       el.setAttribute('aria-labelledby', 'h-rotate');
       return;
     }
@@ -528,11 +536,14 @@ export function createUI({ root, onAction = () => {} } = {}) {
     const wasCurrent = current === name;
     // re-showing a screen that is already up re-renders it: keep the keyboard focus on the same control
     const held = wasCurrent && el.contains(doc.activeElement) ? (doc.activeElement.dataset && doc.activeElement.dataset.action) : null;
+    const phaseBefore = name === 'rotate' ? el.dataset.phase : null;
     render(name, data);
     current = name;
-    if (!wasCurrent) openEl(el);
+    if (!wasCurrent) { openEl(el); openedAt = performance.now(); }
     updatePauseBtn();
-    if (!wasCurrent || !focusable(doc.activeElement) || !el.contains(doc.activeElement)) focusFirst(el, held);
+    // the rotate screen changes its content in place (prompt -> "Tap to continue"): keyboard focus must follow to the new button
+    const phaseChanged = wasCurrent && name === 'rotate' && phaseBefore !== el.dataset.phase;
+    if (!wasCurrent || phaseChanged || !focusable(doc.activeElement) || !el.contains(doc.activeElement)) focusFirst(el, phaseChanged ? null : held);
     if (!wasCurrent) announce(SCREEN_LABEL[name]);
     return el;
   }
@@ -570,6 +581,8 @@ export function createUI({ root, onAction = () => {} } = {}) {
     const btn = t.closest && t.closest('[data-action]');
     if (!btn || btn.disabled || !stage.contains(btn)) return;
     const action = btn.dataset.action;
+    if (action === 'rotate-continue' && !rotateTapOk(e)) return;
+    if (GUARDED.has(current) && e.detail > 0 && performance.now() - openedAt < GUARD_MS) return;   // leftover play taps (keyboard clicks, detail 0, are deliberate)
     let payload;
     switch (action) {
       case 'sound': muted = !muted; reflect(); payload = { muted }; break;
@@ -632,9 +645,20 @@ export function createUI({ root, onAction = () => {} } = {}) {
     else if (!e.shiftKey && a === lastItem) { e.preventDefault(); first.focus(); }
   }
 
+  // "Tap to continue" has to be a tap that STARTED after the screen said so. A thumb that was already on the glass
+  // while the phone turned (children turn it with both hands on it) must not resume the run by simply lifting off.
+  // Keyboard / programmatic clicks (detail 0) have no pointer-down and are always fine.
+  const onRotateDown = () => { readyArmed = current === 'rotate' && els.rotate.dataset.phase === 'ready'; };
+  function rotateTapOk(e) {
+    if (current !== 'rotate' || els.rotate.dataset.phase !== 'ready') return false;
+    if (e.detail === 0) return true;
+    const ok = readyArmed; readyArmed = false;
+    return ok;
+  }
+
   // Tapping the dimmed rotate screen anywhere continues, once it says "Tap to continue".
   function onRotateTap(e) {
-    if (current === 'rotate' && els.rotate.dataset.phase === 'ready' && !(e.target.closest && e.target.closest('button'))) {
+    if (current === 'rotate' && !(e.target.closest && e.target.closest('button')) && rotateTapOk(e)) {
       onAction('rotate-continue');
     }
   }
@@ -643,6 +667,7 @@ export function createUI({ root, onAction = () => {} } = {}) {
   stage.classList.add('pointer-mode');
   stage.addEventListener('click', handleClick);
   els.rotate.addEventListener('click', onRotateTap);
+  els.rotate.addEventListener('pointerdown', onRotateDown, true);
   stage.addEventListener('pointerdown', onPointer, true);
   (doc.defaultView || window).addEventListener('keydown', onKeyDown, true);   // capture: Esc closes a sheet before Input sees it
 
@@ -670,6 +695,7 @@ export function createUI({ root, onAction = () => {} } = {}) {
     destroy() {
       stage.removeEventListener('click', handleClick);
       els.rotate.removeEventListener('click', onRotateTap);
+      els.rotate.removeEventListener('pointerdown', onRotateDown, true);
       stage.removeEventListener('pointerdown', onPointer, true);
       (doc.defaultView || window).removeEventListener('keydown', onKeyDown, true);
       for (const el of Object.values(els)) el.remove();

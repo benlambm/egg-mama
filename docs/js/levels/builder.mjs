@@ -27,7 +27,9 @@ export class Builder {
     this.seen = new Set();
     this.cur = null; this.x = 0; this.y = Y0;
     this.bad = null;          // set when a beat produced something unfair; the act loop rolls it back
-    this.lastGold = 0; this.lastShield = 0; this.lastMagnet = 0;   // main-route distance since the last gold / shield / magnet
+    this.lastGold = 0; this.lastShield = 0; this.lastMagnet = 0; this.sawGap = false;
+    this.iceMode = false;          // Frostline: every platform built while this is on is slippery
+    this.joinFlagX = Infinity;     // where the next landscape's opening flag will be (acts look ahead to keep flags <= 35 s apart)   // main-route distance since the last gold / shield / magnet
     this.stats = { train: 0 };
   }
 
@@ -35,19 +37,19 @@ export class Builder {
   mark() {
     return { p: this.plats.length, k: this.picks.length, e: this.enemies.length, h: this.hazards.length, s: this.springs.length,
       c: this.cps.length, q: this.quiet.length, f: this.firsts.length, seen: new Set(this.seen), cur: this.cur,
-      curW: this.cur ? this.cur.w : 0, x: this.x, y: this.y, lg: this.lastGold, ls: this.lastShield, lm: this.lastMagnet };
+      curW: this.cur ? this.cur.w : 0, x: this.x, y: this.y, lg: this.lastGold, ls: this.lastShield, lm: this.lastMagnet, sg: this.sawGap };
   }
   rollback(m) {
     this.plats.length = m.p; this.picks.length = m.k; this.enemies.length = m.e; this.hazards.length = m.h;
     this.springs.length = m.s; this.cps.length = m.c; this.quiet.length = m.q; this.firsts.length = m.f;
-    this.seen = m.seen; this.cur = m.cur; if (m.cur) m.cur.w = m.curW; this.x = m.x; this.y = m.y; this.bad = null; this.lastGold = m.lg; this.lastShield = m.ls; this.lastMagnet = m.lm;
+    this.seen = m.seen; this.cur = m.cur; if (m.cur) m.cur.w = m.curW; this.x = m.x; this.y = m.y; this.bad = null; this.lastGold = m.lg; this.lastShield = m.ls; this.lastMagnet = m.lm; this.sawGap = m.sg;
   }
   fail(why) { if (!this.bad) this.bad = why; }
 
   /* ───────── platforms ───────── */
   plat(kind, x, y, w, o = {}) {
     const p = { id: this.plats.length, kind, x: rd(x), y: rd(y), w: rd(w), h: o.h ?? (kind === 'ground' ? this.rand.int(96, 132) : this.rand.int(14, 18)), ch: this.ch };
-    if (o.ice) p.ice = true;
+    if (o.ice || (this.iceMode && o.ice !== false && kind !== 'lift' && kind !== 'mover')) p.ice = true;
     if (o.motion) p.motion = o.motion;
     if (o.opt) p.o = 1;
     if (o.solid === false) p.solid = false;

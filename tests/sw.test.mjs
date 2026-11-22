@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
+import { contentVersion, precacheList, rewrite } from "../tools/sync-sw.mjs";
 
 const DOCS = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "docs");
 const SW_SOURCE = fs.readFileSync(path.join(DOCS, "sw.js"), "utf8");
@@ -176,6 +177,31 @@ test("the manifest's icons and start_url are cached, and the HTML links the mani
   const html = fs.readFileSync(path.join(DOCS, "index.html"), "utf8");
   assert.match(html, /rel="manifest" href="manifest\.webmanifest"/);
   for (const f of manifest.icons.map((i) => i.src)) assert.ok(fs.existsSync(path.join(DOCS, f)), `${f} exists`);
+});
+
+test("VERSION fingerprints the files, so a phone that has the game always fetches an edited file", () => {
+  const w = makeWorld();
+  const listed = w.read("FILES");
+  const read = (rel) => fs.readFileSync(path.join(DOCS, rel));
+  const expected = contentVersion(listed, SW_SOURCE, read);
+  assert.equal(w.read("VERSION"), `egg-mama-${expected}`,
+    "a game file (or sw.js itself) changed since the last sync, so phones that already have the game would keep the OLD files for ever. Fix: node tools/sync-sw.mjs");
+});
+
+test("the fingerprint moves when any cached byte moves, and only then", () => {
+  const files = { "index.html": "<html>", "js/a.mjs": "export const a = 1;" };
+  const list = precacheList(Object.keys(files));
+  const read = (rel) => files[rel];
+  const v1 = contentVersion(list, SW_SOURCE, read);
+  assert.match(v1, /^v-[0-9a-f]{10}$/);
+  assert.equal(contentVersion(list, SW_SOURCE, read), v1, "stable");
+  assert.notEqual(contentVersion(list, SW_SOURCE, (r) => (r === "js/a.mjs" ? "export const a = 2;" : files[r])), v1, "an edited file changes it");
+  assert.notEqual(contentVersion(precacheList([...Object.keys(files), "js/b.mjs"]), SW_SOURCE, (r) => files[r] ?? "x"), v1, "a new file changes it");
+  assert.notEqual(contentVersion(list, SW_SOURCE.replace("cache-first", "cache-second") + "// worker logic", read), v1, "the worker's own logic changes it");
+  // rewriting is idempotent and keeps the PREFIX contract
+  const once = rewrite(SW_SOURCE, list, read);
+  assert.equal(rewrite(once, list, read), once);
+  assert.match(once, /const VERSION = PREFIX \+ 'v-[0-9a-f]{10}';/);
 });
 
 test("VERSION is namespaced to this game", () => {

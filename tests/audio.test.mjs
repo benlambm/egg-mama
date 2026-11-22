@@ -453,7 +453,7 @@ test("the four key cues duck the music ~8-10 dB, hold for the cue, then release;
   assert.ok(near(dip.t, T) && near(dip.v, Math.pow(10, -10 / 20), 1e-6), "−10 dB starting with the cue");
   assert.ok(near(rel.t, T + SFX_INFO.goldHatch.duck.seconds), "released when the cue ends");
   assert.ok(rel.tc > dip.tc, "the music swells back slower than it dipped");
-  for (const [name, db] of [["checkpoint", 8], ["ducklingLost", 9], ["beacon", 9]]) {
+  for (const [name, db] of [["checkpoint", 8], ["ducklingLost", 9], ["beacon", 10]]) {
     run(r, 3.2); // let each cue and its duck finish
     const m = p.events.length;
     assert.ok(r.audio.sfx(name), name);
@@ -830,7 +830,7 @@ test("lifecycle fuzz: random unlock / suspend / resume / mute / playSong / sfx s
   let seed = 12345;
   const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
   const pick = (a) => a[(rnd() * a.length) | 0];
-  for (const Ctx of [FakeContext, LaggyContext]) {
+  for (const Ctx of [FakeContext, LaggyContext, FakeContext, LaggyContext, FakeContext, LaggyContext]) {   // six different random runs (the generator carries on between them)
     FakeContext.instances.length = 0;
     const timers = fakeTimers();
     const audio = new GameAudio({ muted: rnd() < 0.5, songs: SONGS, AudioContextClass: Ctx, timers });
@@ -855,9 +855,10 @@ test("lifecycle fuzz: random unlock / suspend / resume / mute / playSong / sfx s
       if (["sfx", "handle", "song", "stop"].includes(op) && off) assert.equal(ctx ? ctx.sources.length : 0, sources, `${op} while off created sound (iteration ${i})`);
       maxTimers = Math.max(maxTimers, timers.count);
       assert.ok(timers.count <= 1, `more than one scheduler at iteration ${i} after ${op}`);
-      const want = !!ctx && !audio.muted && !audio._suspended;
+      const made = FakeContext.instances[0];                 // (unlock may just have created it)
+      const want = !!made && !audio.muted && !audio._suspended;
       assert.equal(timers.count, want ? 1 : 0, `timer ${timers.count} but wantRun=${want} after ${op} (iteration ${i})`);
-      if (ctx) { maxLive = Math.max(maxLive, ctx.live.size); maxPlayers = Math.max(maxPlayers, audio.stats.players); }
+      if (made) { maxLive = Math.max(maxLive, made.live.size); maxPlayers = Math.max(maxPlayers, audio.stats.players); }
     }
     const ctx = FakeContext.instances[0];
     if (ctx.flush) { ctx.flush(); ctx.flush(); }
@@ -925,4 +926,119 @@ test("constructed without `songs` (DESIGN.md §9 shows `new GameAudio({ muted })
   early.unlock(); early.playSong("title"); early.dispose();         // disposed before the import resolves
   await new Promise((res) => setTimeout(res, 50));
   assert.equal(early.stats.players, 0);
+});
+
+/* ══════════════ audit additions: pause / mute fade the master out before suspending the context (no click) ══════════════ */
+
+function timersWithTimeouts() {
+  const t = fakeTimers();
+  t.tid = 0; t.timeouts = new Map();
+  t.setTimeout = (fn, ms) => { const id = ++t.tid; t.timeouts.set(id, { fn, ms }); return id; };
+  t.clearTimeout = (id) => { t.timeouts.delete(id); };
+  t.fireTimeouts = () => { for (const [id, x] of [...t.timeouts]) { t.timeouts.delete(id); x.fn(); } };
+  return t;
+}
+
+test("pause / mute ramp the master to silence first and suspend the context only afterwards; coming back in time never suspends at all", () => {
+  FakeContext.instances.length = 0;
+  const timers = timersWithTimeouts();
+  const audio = new GameAudio({ songs: SONGS, AudioContextClass: FakeContext, timers });
+  const ctx = () => FakeContext.instances[0], gain = () => audio._g.out.gain;
+  audio.unlock(); audio.playSong("a");
+  for (let i = 0; i < 80; i++) { ctx().advance(0.025); timers.fire(); }
+  assert.equal(ctx().state, "running");
+  const t = ctx().currentTime;
+  audio.suspend();
+  assert.equal(timers.count, 0, "the scheduler stops at once: no new notes");
+  assert.equal(ctx().state, "running", "the context is still running while the fade plays");
+  assert.equal(audio.sfx("egg"), false, "no new sfx either");
+  let ev = gain().events.filter((e) => e.t >= t - 1e-9);
+  assert.equal(ev[0].type, "set"); assert.ok(near(ev[0].v, 1), "the fade starts from full level");
+  const ramp = ev.find((e) => e.type === "lin");
+  assert.ok(ramp && ramp.v === 0 && ramp.t > t && ramp.t - t < 0.06, "a short linear ramp to silence, not a step");
+  assert.equal(timers.timeouts.size, 1);
+  assert.ok([...timers.timeouts.values()][0].ms >= (ramp.t - t) * 1000, "the suspend is scheduled after the ramp has finished");
+  timers.fireTimeouts();
+  assert.equal(ctx().state, "suspended");
+  // a second stop request while already stopped changes nothing (still no timer)
+  audio.suspend(); audio.setMuted(true);
+  assert.equal(timers.timeouts.size, 0);
+  // coming back inside the fade window: the context is never suspended and the master ramps up from its current level
+  audio.setMuted(false); audio.resume();
+  for (let i = 0; i < 40; i++) { ctx().advance(0.025); timers.fire(); }
+  const logBefore = ctx().stateLog.length;
+  audio.suspend(); ctx().advance(0.015); audio.resume();
+  assert.equal(timers.timeouts.size, 0, "resume() cancelled the pending suspend");
+  assert.equal(timers.count, 1, "one scheduler");
+  assert.equal(ctx().state, "running");
+  timers.fireTimeouts();
+  assert.equal(ctx().state, "running", "nothing suspended it");
+  assert.ok(!ctx().stateLog.slice(logBefore).includes("suspend"), "suspend() was never called on the context");
+  const e2 = gain().events;
+  const last = e2[e2.length - 1];
+  assert.ok(last.type === "lin" && last.v === 1, "back to full level");
+  const set = e2[e2.length - 2];
+  assert.ok(set.type === "set" && set.v > 0.2 && set.v < 0.9, "…ramping from where the fade had got to (" + set.v.toFixed(2) + "), not from 0 or 1");
+  // dispose with a stop pending leaves no timer behind
+  audio.suspend(); assert.equal(timers.timeouts.size, 1);
+  audio.dispose(); assert.equal(timers.timeouts.size, 0);
+});
+
+test("the soft stop does not change the lifecycle guarantees: fuzz again with fade-then-suspend timers", () => {
+  let seed = 777;
+  const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
+  const pick = (a) => a[(rnd() * a.length) | 0];
+  for (const Ctx of [FakeContext, LaggyContext, FakeContext, LaggyContext, FakeContext, LaggyContext]) {
+    FakeContext.instances.length = 0;
+    const timers = timersWithTimeouts();
+    const audio = new GameAudio({ muted: rnd() < 0.5, songs: SONGS, AudioContextClass: Ctx, timers });
+    const ops = ["unlock", "suspend", "resume", "mute", "unmute", "song", "sfx", "handle", "advance", "advance", "fire", "fire"];
+    for (let i = 0; i < 5000; i++) {
+      const op = pick(ops), ctx = FakeContext.instances[0], n0 = ctx ? ctx.sources.length : 0;
+      const off = audio.muted || audio._suspended;
+      if (op === "unlock") audio.unlock(); else if (op === "suspend") audio.suspend(); else if (op === "resume") audio.resume();
+      else if (op === "mute") audio.setMuted(true); else if (op === "unmute") audio.setMuted(false);
+      else if (op === "song") audio.playSong(pick(["a", "b"]), { fade: pick([0.4, 3.5]) });
+      else if (op === "sfx") audio.sfx(pick(SFX_NAMES));
+      else if (op === "handle") audio.handle({ type: pick(["jump", "egg", "gold", "beacon"]) });
+      else if (op === "fire") { timers.fireTimeouts(); }
+      else if (op === "advance" && ctx) for (let k = 0; k < 1 + ((rnd() * 20) | 0); k++) { ctx.advance(0.025); if (ctx.flush && rnd() < 0.3) ctx.flush(); timers.fire(); }
+      if (ctx && ctx.flush && rnd() < 0.5) ctx.flush();
+      if (["sfx", "handle", "song"].includes(op) && off) assert.equal(ctx ? ctx.sources.length : 0, n0, `${op} while off made sound (iteration ${i})`);
+      const want = !!FakeContext.instances[0] && !audio.muted && !audio._suspended;
+      assert.equal(timers.count, want ? 1 : 0, `scheduler ${timers.count} vs wantRun ${want} (iteration ${i}, ${op})`);
+      assert.ok(timers.timeouts.size <= 1, "at most one pending suspend");
+      if (want) assert.equal(timers.timeouts.size, 0, "no pending suspend while we want sound");
+    }
+    const ctx = FakeContext.instances[0];
+    audio.suspend(); timers.fireTimeouts(); if (ctx.flush) { ctx.flush(); ctx.flush(); }
+    assert.equal(ctx.state, "suspended", Ctx.name + ": once the timer fires the context really is suspended");
+    audio.resume(); audio.setMuted(false); if (ctx.flush) { ctx.flush(); ctx.flush(); }
+    assert.equal(ctx.state, "running"); assert.equal(timers.count, 1);
+    audio.dispose();
+  }
+});
+
+test("a song changed away from before anyone could hear it is dropped at once; a third overlapping song makes the oldest leave quickly", () => {
+  const r = rig(SONGS);
+  r.audio.unlock(); r.audio.playSong("a"); run(r, 3);
+  r.audio.playSong("b", { fade: 3.5 }); run(r, 0.05);          // b has only just started to fade in
+  const n = r.audio.stats.players;
+  assert.equal(n, 2);
+  r.audio.playSong("a", { fade: 3.5 });                         // …and we change our mind
+  assert.equal(r.audio.stats.players, 2, "b was dropped (inaudible), the new a replaces it: a (leaving) + a (new)");
+  assert.ok(!r.audio._players.some((p) => p.id === "b"));
+  // three overlapping songs: the oldest is cut short
+  const r2 = rig({ a: SONG_A, b: SONG_B, c: { ...SONG_B, id: "c", bpm: 90 } });
+  r2.audio.unlock(); r2.audio.playSong("a"); run(r2, 2);
+  r2.audio.playSong("b", { fade: 8 }); run(r2, 1.5);
+  r2.audio.playSong("c", { fade: 8 }); run(r2, 1.5);
+  const [oldest] = r2.audio._players;
+  assert.equal(oldest.id, "a");
+  assert.ok(r2.audio.stats.players <= 3);
+  r2.audio.playSong("a", { fade: 8 });                          // a 4th: the oldest must now be on a short fuse (0.25 s), not 8 s
+  assert.ok(oldest.endTime - r2.ctx.currentTime < 0.5, "the oldest song is hurried out: " + (oldest.endTime - r2.ctx.currentTime));
+  run(r2, 1);
+  assert.ok(!r2.audio._players.includes(oldest), "and gone");
+  assert.equal(r2.timers.count, 1);
 });

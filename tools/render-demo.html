@@ -1,0 +1,391 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Egg Mama renderer demo</title>
+<!--
+  Dev page for tools/render-demo.mjs and tests/e2e/render-smoke.mjs (NOT part of the shipped game).
+  Boots the real Renderer on a real canvas and drives it with the real sim. Serve the REPO ROOT and open
+  /tools/render-demo.html. Everything is exposed as window.demo (see the bottom of the script); the Node tools call it.
+-->
+<style>html,body{margin:0;background:#101018;overflow:hidden}canvas{display:block;position:fixed;left:0;top:0}</style>
+<canvas id="c"></canvas>
+<script type="module">
+import { Renderer, _enemyAt } from '../docs/js/render.mjs';
+import * as SIM from '../docs/js/sim.mjs';
+import { CHAPTERS } from '../docs/js/chapters.mjs';
+import { T } from '../docs/js/tuning.mjs';
+import { buildHandWorld } from './render-demo-world.mjs';
+
+const canvas = document.getElementById('c');
+let R = null, game = null, level = null, worldKind = '', vnow = 1000, mode = 'play', reduced = false, lastEvents = [];
+
+const frameMs = 1000 / 60;
+const ev = { all: [] };
+
+/* ───────── set-up ───────── */
+async function setup({ world = 'gen', seed = 12345, cssW = innerWidth, cssH = innerHeight, dpr = devicePixelRatio, insets = { top: 0, right: 0, bottom: 0, left: 0 } } = {}) {
+  canvas.style.width = cssW + 'px'; canvas.style.height = cssH + 'px';
+  if (R) R.dispose();
+  R = new Renderer(canvas);
+  await R.load();
+  R.resize(cssW, cssH, dpr, insets);
+  level = null; worldKind = '';
+  if (world === 'gen') {
+    try {
+      const mod = await import('../docs/js/levelgen.mjs');
+      level = mod.generateLevel({ circuit: 1, seed }); worldKind = 'gen';
+    } catch (e) { console.warn('levelgen unavailable, using the hand-made world: ' + e.message); }
+  }
+  if (!level) { level = buildHandWorld(); worldKind = 'hand'; }
+  window.demo.renderer = R;
+  return info();
+}
+function info() {
+  return {
+    world: worldKind, platforms: level.platforms.length, pickups: level.pickups.length, enemies: level.enemies.length, hazards: level.hazards.length,
+    springs: level.springs.length, checkpoints: level.checkpoints.length, endX: level.endX, chapters: level.chapters.length,
+    canvas: { w: canvas.width, h: canvas.height }, view: { ...R.view }, dpr: devicePixelRatio, scale: R.S,
+  };
+}
+
+/* ───────── placing Mama ───────── */
+function cpIndexAt(x) { let k = 0; for (let i = 0; i < level.checkpoints.length; i++) if (level.checkpoints[i].x <= x) k = i; else break; return k; }
+function groundAt(g, x) {
+  let best = null;
+  for (const p of g.platforms) if (p.kind === 'ground' && x >= p.x && x <= p.x + p.w && (!best || p.y < best.y)) best = p;
+  if (!best) for (const p of g.platforms) if (x >= p.x && x <= p.x + p.w && (!best || p.y > best.y)) best = p;
+  return best;
+}
+function teleport(g, x) {
+  const p = groundAt(g, x);
+  const m = g.mama;
+  m.x = m.px = x; m.y = m.py = p ? p.cy : 292; m.vx = T.cruise; m.vy = 0; m.onGround = true; m.ground = p || m.ground; m.phase = x; m.rollIn = 99; m.face = 1;
+  g.checkpoint = cpIndexAt(x); g.slot = SIM.chapterSlotAt(level, x);
+  for (const q of g.pickups) if (q.x < x - 40) q.taken = true;
+  for (const c of level.cues) if (c.x < x) g.cuesShown.add(c);
+  g.hist.x.fill(x - 30); g.hist.y.fill(m.y); g.hist.n = 600;
+}
+async function place(x, { flock = 2, eggs = 12, shield = false, magnet = 0, m = 'play', start = true } = {}) {
+  game = SIM.createGame(level, { eggs, score: eggs * 10, flock }, { checkpoint: cpIndexAt(x) });
+  teleport(game, x);
+  game.shield = shield; game.magnet = magnet;
+  SIM.step(game, {});                                   // settle the follower trail
+  if (start) { SIM.startRun(game); game.mama.invuln = 0; game.mama.vx = T.cruise; }
+  SIM.drainEvents(game);
+  mode = m; lastEvents = [];
+  R.resetCamera(game);
+  await R.whenReady();
+  await R.preload(level.chapters[SIM.chapterSlotAt(level, x)] ? level.chapters[SIM.chapterSlotAt(level, x)].index : 0);
+  R.resetCamera(game);
+  draw();
+  return { x: game.mama.x, cp: game.checkpoint };
+}
+
+/* ───────── a tiny autopilot: only for getting natural frames, not a player ───────── */
+function autopilot(g) {
+  const m = g.mama;
+  if (g.status !== 'running' || !m.onGround || !m.ground) return;
+  const end = m.ground.cx + m.ground.w;
+  if (m.x > end - 26) { SIM.act(g, 'jump'); return; }
+  for (const e of g.enemies) {
+    if (e.defeated || e.kind !== 'walker') continue;
+    const d = e.x - m.x; if (d > 18 && d < 70 && Math.abs(e.y - m.y) < 6) { SIM.act(g, 'jump'); return; }
+  }
+  for (const h of level.hazards) { const d = h.x - m.x; if (d > 26 && d < 64) { SIM.act(g, 'jump'); return; } }
+}
+
+function draw(alpha = 1) {
+  R.draw({ game, now: vnow, alpha, mode, reducedMotion: reduced, fade: 0, paused: mode === 'paused' });
+}
+function frame(opts = {}) {
+  if (opts.mode) mode = opts.mode;
+  if (opts.reduced !== undefined) reduced = opts.reduced;
+  vnow += frameMs; draw(opts.alpha === undefined ? 1 : opts.alpha);
+}
+
+/** Run the real sim + renderer for `seconds` of game time (60 fps frames, two 120 Hz sim steps each). */
+function run(seconds, { auto = true, until = null, after = 0, held = null, jumpAt = null } = {}) {
+  const frames = Math.round(seconds * 60);
+  let hit = null, extra = -1;
+  const evs = [];
+  for (let f = 0; f < frames; f++) {
+    for (let s = 0; s < 2; s++) {
+      if (auto && mode === 'play') autopilot(game);
+      if (jumpAt && game.t >= jumpAt && !run._jumped) { SIM.act(game, 'jump'); run._jumped = true; }
+      SIM.step(game, held || {});
+    }
+    const es = SIM.drainEvents(game);
+    if (es.length) { R.spawn(es, game); for (const e of es) { evs.push({ t: +game.t.toFixed(2), type: e.type }); if (until && e.type === until && hit === null) { hit = f; extra = Math.round(after * 60); } } }
+    vnow += frameMs;
+    draw(1);
+    if (hit !== null && f - hit >= extra) break;
+  }
+  run._jumped = false;
+  return { x: +game.mama.x.toFixed(1), t: +game.t.toFixed(2), status: game.status, events: evs, hit: hit !== null };
+}
+run._jumped = false;
+
+function setStatus(s, t = 0) { game.status = s; game.statusT = t; }
+
+/* ───────── benchmarking (forces a flush with a 1-px read-back so rasterisation is included) ───────── */
+function flush() { R.ctx.getImageData(0, 0, 1, 1); }
+function bench(frames = 120, { advance = true } = {}) {
+  const times = [];
+  for (let i = 0; i < frames; i++) {
+    if (advance) { SIM.step(game, {}); SIM.step(game, {}); }
+    vnow += frameMs;
+    const t0 = performance.now(); draw(1); const t1 = performance.now(); flush(); const t2 = performance.now();
+    times.push([t1 - t0, t2 - t0]);
+  }
+  const js = times.map((t) => t[0]).sort((a, b) => a - b), all = times.map((t) => t[1]).sort((a, b) => a - b);
+  const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length;
+  return { frames, jsMean: +mean(js).toFixed(2), jsP95: +js[Math.floor(js.length * 0.95)].toFixed(2), flushMean: +mean(all).toFixed(2), flushP95: +all[Math.floor(all.length * 0.95)].toFixed(2), flushMax: +all[all.length - 1].toFixed(2), stats: { ...R.stats } };
+}
+
+/** Best-of-N mean frame cost (the machine is shared, so the minimum of several short runs approximates the uncontended cost). */
+function benchBest(frames = 24, reps = 6) {
+  let best = null;
+  for (let r = 0; r < reps; r++) { const b = bench(frames); if (!best || b.flushMean < best.flushMean) best = b; }
+  return best;
+}
+
+/** Scroll the camera along the whole world (Mama is moved directly, the sim is not stepped) and sample frame cost + memory. */
+async function scroll({ from = 300, to = level.endX - 300, speed = 7800, window: win = 300, flushEvery = 1 } = {}) {
+  game = SIM.createGame(level, { eggs: 5, score: 50, flock: 3 }, { checkpoint: cpIndexAt(from) });
+  teleport(game, from); SIM.startRun(game); mode = 'play';
+  R.resetCamera(game);
+  const m = game.mama, dt = 1 / 60, samples = [];
+  const mem = () => (performance.memory ? performance.memory.usedJSHeapSize : 0);
+  const heapStart = heap();
+  let accJs = [], accAll = [], accScan = 0, accDec = 0, n = 0, pi = 0, maxDecoded = 0, hitches = 0, worst = 0, missing = 0;
+  const spikes = [];
+  const plats = game.platforms;
+  for (let x = from; x < to; x += speed * dt) {
+    m.px = m.x; m.py = m.y; m.x = x;
+    while (pi < plats.length - 1 && plats[pi].x + plats[pi].w < x) pi++;
+    for (let k = Math.max(0, pi - 3); k < Math.min(plats.length, pi + 12); k++) { const p = plats[k]; if (p.kind === 'ground' && x >= p.x && x <= p.x + p.w) { m.y = p.cy; m.ground = p; } }
+    m.phase += speed * dt; m.vx = T.cruise; game.t += dt;
+    game.checkpoint = Math.max(game.checkpoint, cpIndexAt(x));
+    vnow += frameMs;
+    const t0 = performance.now(); draw(1); const t1 = performance.now();
+    if (n % flushEvery === 0) flush();
+    const t2 = performance.now();
+    accJs.push(t1 - t0); accAll.push(t2 - t0); accScan += R.stats.scanned + R.stats.platforms; accDec = Math.max(accDec, R.stats.decoded);
+    missing += R.stats.paintingMissing; maxDecoded = Math.max(maxDecoded, R.stats.decoded); worst = Math.max(worst, t2 - t0); if (t2 - t0 > 50) { hitches++; if (spikes.length < 40) spikes.push({ x: Math.round(x), ms: +(t2 - t0).toFixed(0), js: +(t1 - t0).toFixed(0), decoded: R.stats.decoded, jobs: R._jobs.length, loads: R.paintings.loads }); }
+    n++;
+    if (n % 3 === 0) await new Promise((r) => setTimeout(r, 0));          // let image decodes finish, as a real rAF loop would
+    if (accAll.length >= win) {
+      const med = (a) => { const b = a.slice().sort((p, q) => p - q); return b[Math.floor(b.length / 2)]; };
+      const mean = (a) => a.reduce((q, v) => q + v, 0) / a.length;
+      samples.push({ x: Math.round(x), jsMean: +mean(accJs).toFixed(2), allMean: +mean(accAll).toFixed(2), allMed: +med(accAll).toFixed(2), scanned: +(accScan / win).toFixed(1), decoded: accDec, heapMB: +(mem() / 1048576).toFixed(1), cacheSprites: R.cache.map.size, jobs: R._jobs.length });
+      accJs = []; accAll = []; accScan = 0; accDec = 0;
+    }
+  }
+  const heapEnd = heap();
+  return { frames: n, samples, maxDecoded, missing, hitches, spikes, worst: +worst.toFixed(1), heapStartMB: +(heapStart / 1048576).toFixed(2), heapEndMB: +(heapEnd / 1048576).toFixed(2) };
+}
+
+/* ───────── probes used by tests/e2e/render-smoke.mjs ───────── */
+
+/** Move Mama (and the camera) to x on the current game without re-creating it, then draw one frame. */
+function jumpTo(x, m = 'play') {
+  teleport(game, x); mode = m;
+  R.resetCamera(game);
+  vnow += frameMs; draw(1);
+}
+
+/** Is everything the brute-force visibility test finds also drawn (and nothing else)? Uses the renderer's own index. */
+function cullCheck(xs) {
+  const out = [];
+  for (const x of xs) {
+    jumpTo(x);
+    const ix = R.ix, cam = R.camera.x, camL = cam - 6, camR = cam + R.view.w + 6;
+    const drawn = new Set(); for (let k = 0; k < R.visN; k++) drawn.add(R.visP[k]);
+    let missing = 0, extra = 0, brute = 0;
+    for (let i = 0; i < level.platforms.length; i++) {
+      const vis = ix.pHi[i] >= camL && ix.pLo[i] <= camR;
+      if (vis) { brute++; if (!drawn.has(i)) missing++; } else if (drawn.has(i)) extra++;
+    }
+    let bp = 0; for (const p of game.pickups) if (!p.taken && p.x >= camL - 34 && p.x <= camR + 34) bp++;
+    const pos = { x: 0, y: 0, face: 1 }, tt = game.t; let be = 0;
+    for (const e of game.enemies) { if (e.defeated) continue; _enemyAt(e, tt, pos); if (pos.x >= camL - 36 && pos.x <= camR + 36) be++; }
+    out.push({ x, cam: +cam.toFixed(1), platforms: R.visN, brutePlatforms: brute, missing, extra, pickups: R.stats.pickups, brutePickups: bp, enemies: R.stats.enemies, bruteEnemies: be, scanned: R.stats.scanned });
+  }
+  return out;
+}
+
+/** Count element reads of the big level arrays during real frames (a whole-array loop would read thousands). */
+function readCount(xs, frames = 3) {
+  const counts = { platforms: 0, pickups: 0, enemies: 0, springs: 0 }, lens = { platforms: game.platforms.length, pickups: game.pickups.length, enemies: game.enemies.length, springs: game.springs.length };
+  const keep = { platforms: game.platforms, pickups: game.pickups, enemies: game.enemies, springs: game.springs };
+  const wrap = (name) => new Proxy(keep[name], { get(t, k) { if (typeof k === 'string' && k.charCodeAt(0) >= 48 && k.charCodeAt(0) <= 57) counts[name]++; return t[k]; } });
+  const worst = { platforms: 0, pickups: 0, enemies: 0, springs: 0 };
+  const lvlKeep = { platforms: level.platforms, pickups: level.pickups, enemies: level.enemies, hazards: level.hazards, checkpoints: level.checkpoints };
+  for (const x of xs) {
+    jumpTo(x);                                     // (warms everything for this x)
+    for (const k of Object.keys(keep)) game[k] = wrap(k);
+    const lc = { hazards: 0, checkpoints: 0 };
+    level.hazards = new Proxy(lvlKeep.hazards, { get(t, k) { if (typeof k === 'string' && k.charCodeAt(0) >= 48 && k.charCodeAt(0) <= 57) lc.hazards++; return t[k]; } });
+    level.checkpoints = new Proxy(lvlKeep.checkpoints, { get(t, k) { if (typeof k === 'string' && k.charCodeAt(0) >= 48 && k.charCodeAt(0) <= 57) lc.checkpoints++; return t[k]; } });
+    for (const k of Object.keys(counts)) counts[k] = 0;
+    for (let f = 0; f < frames; f++) { vnow += frameMs; draw(1); }
+    for (const k of Object.keys(keep)) { worst[k] = Math.max(worst[k], counts[k] / frames); game[k] = keep[k]; }
+    worst.hazards = Math.max(worst.hazards || 0, lc.hazards / frames); worst.checkpoints = Math.max(worst.checkpoints || 0, lc.checkpoints / frames);
+    level.hazards = lvlKeep.hazards; level.checkpoints = lvlKeep.checkpoints;
+  }
+  return { reads: worst, lengths: { ...lens, hazards: level.hazards.length, checkpoints: level.checkpoints.length } };
+}
+
+/** Garbage per frame in steady state (needs --js-flags=--expose-gc and --enable-precise-memory-info). JS only, no sim, no read-back. */
+function allocTest(frames = 300, withEvents = false, noArt = false) {
+  if (!window.gc || !performance.memory) return { skipped: true };
+  const L = R.layers, saved = { ...L };
+  if (noArt) for (const k of ['plats', 'land', 'pick', 'enemies', 'flock', 'mama']) L[k] = false;
+  const m = game.mama, dt = 1 / 60;
+  const tick = (i) => { m.px = m.x; m.x += T.cruise * dt; m.phase += T.cruise * dt; game.t += dt; vnow += frameMs; if (withEvents && i % 25 === 0) R.spawn([{ type: 'egg', id: 1, x: m.x + 60, y: m.y - 30, points: 10 }], game); draw(1); };
+  for (let i = 0; i < 90; i++) tick(i);                         // reach steady state (sprites baked, pools warm)
+  window.gc(); window.gc();
+  const h0 = performance.memory.usedJSHeapSize;
+  for (let i = 0; i < frames; i++) tick(i);
+  const h1 = performance.memory.usedJSHeapSize;
+  window.gc(); window.gc();
+  const h2 = performance.memory.usedJSHeapSize;
+  Object.assign(L, saved);
+  return { frames, bytesPerFrame: Math.round((h1 - h0) / frames), retainedAfterGc: h2 - h0 };
+}
+function heap() { if (window.gc) { window.gc(); window.gc(); } return performance.memory ? performance.memory.usedJSHeapSize : 0; }
+
+
+function column(x, y0, n) { const d = R.ctx.getImageData(x, y0, 1, n).data, out = []; for (let i = 0; i < n; i++) out.push(0.3 * d[i * 4] + 0.59 * d[i * 4 + 1] + 0.11 * d[i * 4 + 2]); return out; }
+function meanBand(y0, y1) {
+  const W = R.canvas.width, d = R.ctx.getImageData(0, y0, W, y1 - y0).data; let r = 0, g = 0, b = 0, n = 0;
+  for (let i = 0; i < d.length; i += 4 * 7) { r += d[i]; g += d[i + 1]; b += d[i + 2]; n++; }
+  return [r / n, g / n, b / n];
+}
+async function waitPaintings(list, ms = 6000) {
+  const t0 = performance.now();
+  while (performance.now() - t0 < ms) { if (list.every((i) => R.paintings.get(i))) return true; vnow += frameMs; draw(1); await new Promise((r) => setTimeout(r, 30)); }
+  return false;
+}
+/** A story/trail caption is on screen, a hatch event arrives: it must appear within a third of a second and never overlap. */
+function captionProbe() {
+  const fx = R.fx; fx.reset(game.eggs);
+  fx.caption('trail', 'Mama counts her eggs. Only one is home. The rest rolled away down the valley.', '', 6);
+  const timeline = [];
+  for (let f = 0; f < 90; f++) {
+    if (f === 40) R.spawn([{ type: 'hatch', x: game.mama.x, y: game.mama.y - 20, flock: 3 }], game);
+    vnow += frameMs; draw(1);
+    timeline.push({ f, title: fx.cap.live ? fx.cap.title : '', age: +fx.cap.age.toFixed(2), queued: fx.qn });
+  }
+  return timeline;
+}
+function rockProbe(frames = 240) {
+  let max = 0;
+  const m = game.mama, dt = 1 / 60;
+  for (let i = 0; i < frames; i++) { m.px = m.x; m.x += T.cruise * dt; m.phase += T.cruise * dt; game.t += dt; vnow += frameMs; draw(1); max = Math.max(max, Math.abs(R._mp.rock)); }
+  return max;
+}
+function pillProbe() {
+  const fx = R.fx; fx.reset(game.eggs);
+  const log = [];
+  for (let f = 0; f < 200; f++) {
+    if (f === 10) { game.eggs += 1; R.spawn([{ type: 'egg', id: 1, x: game.mama.x + 30, y: game.mama.y - 30, points: 10 }], game); }
+    vnow += frameMs; draw(1); log.push({ f, t: +fx.pillT.toFixed(2) });
+  }
+  return log;
+}
+/** The circuit-change fade: fully faded must be a flat colour; the HUD flag must follow the mode. */
+function fadeCheck() {
+  const px = () => { const W = R.canvas.width, H = R.canvas.height, d = R.ctx.getImageData(W >> 1, H >> 1, 1, 1).data; return [d[0], d[1], d[2]]; };
+  R.draw({ game, now: (vnow += frameMs), alpha: 1, mode: 'play', fade: 1, fadeColor: '#000' }); const black = px();
+  R.draw({ game, now: (vnow += frameMs), alpha: 1, mode: 'play', fade: 1, fadeColor: '#fff' }); const white = px();
+  R.draw({ game, now: (vnow += frameMs), alpha: 1, mode: 'play', fade: 0.5 }); const half = px();
+  R.draw({ game, now: (vnow += frameMs), alpha: 1, mode: 'play', fade: 0 }); const none = px();
+  const huds = {};
+  for (const m of ['title', 'play', 'paused', 'dead', 'finish']) { R.draw({ game, now: (vnow += frameMs), alpha: 1, mode: m }); huds[m] = R._sv.hud; }
+  return { black, white, half, none, huds };
+}
+function hashCanvas() { const d = R.ctx.getImageData(0, 0, R.canvas.width, R.canvas.height).data; let h = 2166136261; for (let i = 0; i < d.length; i += 13) h = Math.imul(h ^ d[i], 16777619) >>> 0; return h; }
+
+/* ───────── the scenes used for screenshots ───────── */
+function landscapeX0(i) { const c = level.chapters.find((k) => k.index === i); return c ? c.x0 : 0; }
+function flagOf(i) { const c = level.chapters.find((k) => k.index === i); return c ? level.checkpoints[c.flag] : level.checkpoints[0]; }
+function firstWhere(list, pred, from = -Infinity, to = Infinity) { for (const e of list) { const x = e.x !== undefined ? e.x : (e.x0 !== undefined ? e.x0 : e.cx); if (x >= from && x <= to && pred(e)) return e; } return null; }
+
+const scenes = {
+  async meadow() { await place(300, { flock: 2 }); return run(1.8); },
+  async jump() { await place(flagOf(0).x + 600, { flock: 3 }); return run(1.0 + 0.62, { auto: false, jumpAt: 1.0 }); },
+  async hatch() { await place(300, { flock: 2, eggs: 3 }); return run(6, { until: 'hatch', after: 0.4 }); },
+  async dissolve25() { const x = landscapeX0(1); await place(x - 260); return run(0.4); },
+  async dissolve50() { const x = landscapeX0(1); await place(x); return run(0.4); },
+  async dissolve75() { const x = landscapeX0(1); await place(x + 260); return run(0.4); },
+  async chapterEnter() { const x = landscapeX0(2); await place(x - 90); return run(3.2); },
+  async clover() { const f = flagOf(1); await place(f.x + 520); return run(1.2); },
+  async reedwater() { const f = flagOf(2); await place(f.x + 400); return run(1.0); },
+  async fogwood() { const f = flagOf(5); await place(f.x + 400); return run(1.0); },
+  async fogwoodFlyer() {
+    const x0 = landscapeX0(5), e = firstWhere(level.enemies, (q) => q.kind === 'flyer', x0 + 1000);
+    await place(e ? e.cx - 330 : flagOf(5).x + 800); return run(1.6);
+  },
+  async caverns() { const f = flagOf(8); await place(f.x + 450); return run(1.0); },
+  async frostline() { const f = flagOf(9); await place(f.x + 450); return run(1.0); },
+  async quarry() { const f = flagOf(4); await place(f.x + 450); return run(1.0); },
+  async orchard() { const f = flagOf(3); await place(f.x + 450); return run(1.0); },
+  async canyon() { const f = flagOf(6); await place(f.x + 450); return run(1.0); },
+  async summit() { await place(level.beacon.x - 520); return run(1.2); },
+  async beaconLit() { await place(level.beacon.x - 170, { flock: 4 }); const r = run(5, { until: 'beacon', after: 0.9 }); mode = 'finish'; return r; },
+  async finish() { await place(level.beacon.x - 170, { flock: 5 }); const r = run(5, { until: 'beacon', after: 3.0 }); mode = 'finish'; frame({ mode: 'finish' }); return r; },
+  async hit() {
+    const e = firstWhere(level.enemies, (q) => q.kind === 'walker', 8000);
+    await place(e.x0 - 80, { flock: 2 }); game.enemies[e.id].phase = 0; return run(6, { until: 'duckling-lost', after: 0.22, auto: false });
+  },
+  async stomp() {
+    const e = firstWhere(level.enemies, (q) => q.kind === 'walker', 8000);
+    await place(e.x0 - 120, { flock: 1 }); return run(6, { until: 'stomp', after: 0.25 });
+  },
+  async checkpoint() {
+    const f = level.checkpoints[Math.min(4, level.checkpoints.length - 1)];
+    await place(f.x - 110); return run(4, { until: 'checkpoint', after: 0.5, auto: false });
+  },
+  async title() { await place(flagOf(0).x, { flock: 3, start: false, m: 'title' }); mode = 'title'; frame(); return {}; },
+  async dead() {
+    const e = firstWhere(level.enemies, (q) => q.kind === 'walker', 8000);
+    await place(e.x0 - 80, { flock: 0 }); const r = run(6, { until: 'dead', after: 0.38, auto: false }); mode = 'dead'; return r;
+  },
+  async paused() { await place(300, { flock: 3 }); run(1.2); mode = 'paused'; frame(); return {}; },
+  async shield() { await place(flagOf(3).x + 300, { flock: 2, shield: true }); return run(0.8); },
+  async magnet() { await place(flagOf(3).x + 300, { flock: 2, magnet: 6 }); return run(0.9); },
+  async spring() {
+    const s = firstWhere(level.springs, () => true, landscapeX0(3));
+    await place(s.x - 100); return run(5, { until: 'spring', after: 0.18 });
+  },
+  async spikes() {
+    const h = firstWhere(level.hazards, () => true, 100000);
+    await place(h.x - 200); return run(1.0);
+  },
+  async crumble() {
+    const p = firstWhere(level.platforms, (q) => q.kind === 'crumble', 0);
+    await place(p.x - 140); return run(7, { until: 'crumble-start', after: 0.45 });
+  },
+};
+
+window.demo = {
+  setup, place, run, frame, bench, benchBest, scroll, info, scenes,
+  scene: async (name) => { const r = await scenes[name](); return { scene: name, ...r }; },
+  jumpTo, cullCheck, readCount, allocTest, heap, column, meanBand, waitPaintings, captionProbe, rockProbe, pillProbe, hashCanvas, fadeCheck,
+  setStatus, setMode: (m) => { mode = m; }, setReduced: (b) => { reduced = !!b; },
+  get game() { return game; }, get level() { return level; }, renderer: null,
+  enemyAtCheck(samples = 400) {              // the renderer's allocation-free enemyAt must match the sim's enemyPosAt
+    const out = { x: 0, y: 0, face: 1 }; let bad = 0;
+    for (let i = 0; i < samples; i++) {
+      const e = level.enemies[i % level.enemies.length], t = (i * 0.37) % 40;
+      _enemyAt(e, t, out); const q = SIM.enemyPosAt(e, t);
+      if (Math.abs(out.x - q.x) > 1e-9 || Math.abs(out.y - q.y) > 1e-9 || out.face !== q.face) bad++;
+    }
+    return bad;
+  },
+  pixel(x, y) { const d = R.ctx.getImageData(x, y, 1, 1).data; return [d[0], d[1], d[2], d[3]]; },
+  async ready() { await R.whenReady(); return true; },
+};
+window.demoReady = true;
+</script>

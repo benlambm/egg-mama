@@ -5,6 +5,10 @@
  * Everything here is derived from tuning.mjs and cross-checked against the real sim in
  * tests/levels.test.mjs ("phys matches sim"), so a retune that breaks reach shows up as a test failure.
  *
+ * Two sim facts worth knowing: (1) between SOLID ground islands at the same height she can simply WALK across a gap of up
+ * to ~38 u (her body mantles onto the far edge within T.stepUp), so a gap that must be jumped is at least ~42 u; and
+ * (2) a solid wall higher than her feet never needs perfect timing: she presses against it and jumps straight up.
+ *
  * Conventions: y grows DOWN. `top` is a platform's top (the height her feet stand at). A jump from
  * platform A to platform B has dy = B.top - A.top (positive = landing lower). Positions inside a
  * jump window are measured as the takeoff x of her feet.
@@ -67,53 +71,60 @@ export function jumpWindow(from, to, speed = C) {
  * it a takeoff exists whose window (in time) is >= minSecs AND every takeoff in that window leads to
  * a good landing on the next platform. So from any good landing the rest of the chain has slack.
  *
- * plats: [{ x, end, top, kind: 'ground'|'ledge'|'crumble', wall }] consecutive, sorted by x.
+ * plats: [{ x, end, top, kind: 'ground'|'ledge'|'crumble' }] consecutive, sorted by x.
  * Returns { ok, minSecs, secs: [per jump, from the nominal path], takeoffs: [nominal takeoff x per jump], landings }.
  * The nominal path takes off at the centre of each feasible set (what a calm player / the bot does).
  */
 export function trainFeasible(plats, { minSecs = T.minWindow, from = null } = {}) {
   const n = plats.length;
   const need = minSecs * C;
-  // The landing grid of each platform only needs the stretch she can actually land on / take off from: the first
-  // ~420 u after its start, and for the starting platform just the last ~170 u before its end (she has been
-  // rolling a while). Keeps the DP cheap on the long ground islands the generator builds.
+  // The landing grid of each platform only needs the stretch she can actually land on (a jump never lands more than
+  // ~130 u past a platform's start) and, for the starting platform, the last ~170 u before its end (she has been
+  // rolling a while). That keeps the DP tiny on the long ground islands the generator builds.
   const lo = plats.map((p, i) => (i === 0 ? Math.max(p.x, p.end - 170) : p.x) - T.mamaHalfW - 1);
   const base = lo.map((v) => Math.floor(v));
-  const size = plats.map((p, i) => Math.ceil(Math.min(p.end + T.mamaHalfW + C * T.coyote + 2, base[i] + 460 + (i === 0 ? 0 : 0))) - base[i] + 1);
+  const size = plats.map((p, i) => Math.ceil(Math.min(p.end + T.mamaHalfW + C * T.coyote + 2, base[i] + (i === 0 ? 260 : 170))) - base[i] + 1);
   const good = plats.map((p, i) => new Uint8Array(size[i]));
   good[n - 1].fill(1);
   const jw = [];
   for (let i = 0; i < n - 1; i++) jw.push(jumpWindow(plats[i], plats[i + 1]));
-  // the feasible takeoff x-cells for jump i given landing x_l on plats[i]
+  // is a landing at absolute x on platform j one the rest of the chain can finish from? (the last platform: always)
+  const isGood = (j, x) => { const k = Math.round(x) - base[j]; return k >= 0 && (j === n - 1 || (k < size[j] && good[j][k] === 1)); };
+  // the feasible takeoff x-cells for jump i given landing x_l on plats[i] (used for the nominal pass)
   const cells = (i, xl, out) => {
     out.length = 0;
-    const w = jw[i], pi = plats[i], pn = plats[i + 1];
+    const w = jw[i], pi = plats[i];
     if (!(w.width > 0)) return out;
-    let lo = Math.max(pi.end + w.lo, xl), hi = pi.end + w.hi;
+    let lo2 = Math.max(pi.end + w.lo, xl), hi = pi.end + w.hi;
     if (pi.kind === 'crumble') hi = Math.min(hi, xl + (T.crumbleDelay - 0.05) * C);
-    for (let x = Math.ceil(lo); x <= hi; x++) {
-      const land = Math.round(x + w.F) - base[i + 1];
-      if (land >= 0 && land < size[i + 1] && good[i + 1][land]) out.push(x);
-    }
+    for (let x = Math.ceil(lo2); x <= hi; x++) if (isGood(i + 1, x + w.F)) out.push(x);
     return out;
   };
-  const tmp = [];
+  // backward pass with prefix sums: how many good takeoff cells lie in a range, in O(1) per landing cell
   for (let i = n - 2; i >= 0; i--) {
+    const w = jw[i], pi = plats[i];
+    if (!(w.width > 0)) continue;
+    const txLo = Math.ceil(pi.end + w.lo), txHi = Math.floor(pi.end + w.hi);
+    if (txHi < txLo) continue;
+    const pre = new Int32Array(txHi - txLo + 2);
+    for (let x = txLo; x <= txHi; x++) pre[x - txLo + 1] = pre[x - txLo] + (isGood(i + 1, x + w.F) ? 1 : 0);
+    const crumble = pi.kind === 'crumble';
     for (let k = 0; k < size[i]; k++) {
       const xl = base[i] + k;
-      good[i][k] = cells(i, xl, tmp).length >= need ? 1 : 0;
+      const a2 = Math.max(txLo, Math.ceil(xl));
+      const b2 = crumble ? Math.min(txHi, Math.floor(xl + (T.crumbleDelay - 0.05) * C)) : txHi;
+      good[i][k] = b2 >= a2 && pre[b2 - txLo + 1] - pre[a2 - txLo] >= need ? 1 : 0;
     }
   }
   // nominal forward pass: start well before the first platform's end (she has been rolling a while)
   let xl = from == null ? Math.max(plats[0].x, plats[0].end - 160) : from;
-  const secs = [], takeoffs = [], landings = [];
+  const secs = [], takeoffs = [], landings = [], tmp = [];
   let ok = true, minS = Infinity;
   for (let i = 0; i < n - 1; i++) {
-    const k = Math.round(xl) - base[i];
-    if (k < 0 || k >= size[i] || !good[i][k]) { ok = false; secs.push(0); minS = 0; break; }
+    if (!isGood(i, xl)) { ok = false; secs.push(0); minS = 0; break; }
     const c = cells(i, xl, tmp);
-    const s = c.length / C;
-    secs.push(s); minS = Math.min(minS, s);
+    const s2 = c.length / C;
+    secs.push(s2); minS = Math.min(minS, s2);
     const xt = c[(c.length - 1) >> 1];
     takeoffs.push(xt);
     xl = xt + jw[i].F;
@@ -122,7 +133,7 @@ export function trainFeasible(plats, { minSecs = T.minWindow, from = null } = {}
   if (secs.length < n - 1) ok = false;
   // goodSpan(i, x0, x1): is every landing x in [x0, x1] on platform i one the rest of the chain can be completed from?
   const goodSpan = (i, x0, x1) => {
-    for (let x = Math.ceil(x0); x <= x1; x++) { const k = x - base[i]; if (k < 0 || k >= size[i] || !good[i][k]) return false; }
+    for (let x = Math.ceil(x0); x <= x1; x++) if (!isGood(i, x)) return false;
     return true;
   };
   return { ok: ok && minS >= minSecs - 1e-9, minSecs: ok ? minS : 0, secs, takeoffs, landings, goodSpan };

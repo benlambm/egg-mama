@@ -18,7 +18,7 @@ export const def = (name, meta, fn) => { BEATS[name] = { name, hz: true, ...meta
 
 /* ───────────────────────── helpers ───────────────────────── */
 
-export const gapW = (c, extra = 0) => rd(clamp(P.gap(c.d) + extra + c.rand.range(-3, 3), 22, T.maxGapHard - 2));
+export const gapW = (c, extra = 0) => rd(clamp(P.gap(c.d) + extra + c.rand.range(-3, 3) * clamp(c.d / 4, 0.25, 1), 22, T.maxGapHard - 2));   // the first minutes barely vary
 export const landW = (c) => rd(clamp(P.landing(c.d) + c.rand.range(-24, 24), T.minLanding + 14, 300));
 export const islW = (c) => rd(clamp(P.island(c.d) + c.rand.range(-12, 14), T.minLanding + 6, 230));
 export const ledgeW = (c) => rd(clamp(P.ledge(c.d) + c.rand.range(-10, 12), T.minLanding, 220));
@@ -29,7 +29,7 @@ export const dyJit = (c, m) => rd(c.rand.range(-m, m));
  * lightly alive: arcs of eggs to jump for, and (sometimes) tiny hills, but the last 280 u before whatever comes next
  * is plain, level ground so nothing misleads the approach.
  */
-export function rest(B, c, factor = 1, min = 280) {
+export function rest(B, c, factor = 1, min = 220) {
   const len = rd(Math.max(min, P.rest(c.d) * factor * c.rand.range(0.85, 1.2)));
   const x0 = B.x;
   const plain = Math.min(len, 280);
@@ -57,10 +57,11 @@ function bumps(B, c, len) {
 /** Golden / shield / magnet pickups on SAFE flat ground, spaced by main-route distance (about 45 s, 90 s, 3 min). */
 export function dropPickups(B, c, x0, x1) {
   if (x1 - x0 < 260) return;
-  const mid = (x0 + x1) / 2 + c.rand.range(-40, 40);
-  if (B.x - B.lastGold > 3800 + c.rand.range(0, 700)) { B.gold(mid, B.y - 28); B.lastGold = B.x; return; }
-  if (c.ch >= 2 && B.x - B.lastShield > 9600 + c.rand.range(0, 1500)) { B.pickup('shield', mid, B.y - 30); B.lastShield = B.x; B.tag('shield', mid); return; }
-  if (c.ch >= 1 && B.x - B.lastMagnet > 19000 + c.rand.range(0, 3000)) { B.pickup('magnet', mid, B.y - 30); B.lastMagnet = B.x; B.tag('magnet', mid); }
+  const mid = (x0 + x1) / 2 + c.rand.range(-30, 30);
+  // each kind keeps its own clock; when several are due on the same stretch they sit side by side
+  if (B.x - B.lastGold > 3600 + c.rand.range(0, 600)) { B.gold(mid, B.y - 28); B.lastGold = B.x; }
+  if (c.ch >= 2 && B.x - B.lastShield > 9600 + c.rand.range(0, 1500)) { B.pickup('shield', mid + 90, B.y - 30); B.lastShield = B.x; B.tag('shield', mid); }
+  if (c.ch >= 1 && B.x - B.lastMagnet > 16000 + c.rand.range(0, 3000)) { B.pickup('magnet', mid - 90, B.y - 30); B.lastMagnet = B.x; B.tag('magnet', mid); }
 }
 
 /** Bring the cursor's ground back to the usual height with small, safe steps (up <= stepUp, down any). */
@@ -106,7 +107,10 @@ def('goldenPatch', { needs: 'gap', hz: false }, (B, c) => {
 
 def('gap1', { needs: 'gap' }, (B, c) => {
   B.tag('gap', B.x);
-  B.train([{ gap: gapW(c), w: landW(c), dy: 0, gold: c.rand.chance(c.goldP ?? 0.1) }]);
+  // the very first gap of a journey: forgiving (44 u, a real jump since she can only walk across ~38 u) with a wide landing
+  const first = !B.sawGap;
+  B.sawGap = true;
+  B.train([{ gap: first ? 44 : gapW(c), w: first ? 240 : landW(c), dy: 0, gold: c.rand.chance(c.goldP ?? 0.1) }]);
 });
 
 def('gapPair', { needs: 'gap' }, (B, c) => {
@@ -119,22 +123,21 @@ def('gapChain', { needs: 'gap' }, (B, c) => {
   const n = c.k < 0.3 ? 3 : c.k < 0.7 ? 4 : 5;
   const specs = [];
   for (let i = 0; i < n; i++) specs.push({ gap: gapW(c, i % 2 ? 2 : -1), w: i === n - 1 ? landW(c) : islW(c), dy: i === n - 1 ? 0 : dyJit(c, 8), gold: i === 1 && c.rand.chance(0.3) });
+  fixHeights(B, specs, Y0 - 24, Y0 + 12);
   B.train(specs);
-  settle(B, c);
 });
 
 /** A step up (a short wall she hops onto), a stretch on the higher ground, then steps back down. Walls forgive: a late jump just stalls. */
 def('stepUp', { needs: 'step' }, (B, c) => {
   B.tag('step', B.x);
   const h = rd(clamp(24 + 26 * ease(c.d) + c.rand.range(-4, 12), 22, 64));
-  const gap = c.rand.chance(0.5) ? 0 : rd(c.rand.range(14, 28));
-  const up = B.train([{ gap, w: rd(c.rand.range(200, 300)), dy: -h }]);
+  const gap = c.d > 2 && c.rand.chance(clamp(0.2 + 0.1 * c.d, 0.4, 1)) ? rd(c.rand.range(30, 42)) : 0;   // a wall, or (later) a real gap: never one narrower than her body
+  B.train([{ gap, w: rd(c.rand.range(200, 300)), dy: -h }]);
   if (B.bad) return;
   B.runEggs(B.cur.x + 30, B.x, B.y, 'line');
   B.hop(0, rd(c.rand.range(220, 320)), h);            // drop back down (walk off the edge)
   B.runEggs(B.cur.x, B.x, B.y, 'wave');
   settle(B, c);
-  void up;
 });
 
 /** Two or three steps up and down: little islands to hop between. */
@@ -143,10 +146,10 @@ def('stairs', { needs: 'step' }, (B, c) => {
   const n = c.k < 0.5 ? 2 : 3;
   const specs = [];
   const h = [];
-  for (let i = 0; i < n; i++) { const s = rd(clamp(22 + 14 * ease(c.d) + c.rand.range(0, 16), 22, 52)); h.push(s); specs.push({ gap: rd(c.rand.range(10, 30)), w: rd(c.rand.range(150, 210)), dy: -s, gold: i === n - 1 && c.rand.chance(0.3) }); }
+  for (let i = 0; i < n; i++) { const s = rd(clamp(22 + 14 * ease(c.d) + c.rand.range(0, 16), 22, Math.floor(110 / n))); h.push(s); specs.push({ gap: c.d > 2 && c.rand.chance(clamp(0.2 + 0.1 * c.d, 0.4, 1)) ? rd(c.rand.range(30, 40)) : 0, w: rd(c.rand.range(150, 210)), dy: -s, gold: i === n - 1 && c.rand.chance(0.3) }); }
   B.train(specs);
   if (B.bad) return;
-  for (let i = n - 1; i >= 0; i--) B.hop(rd(c.rand.range(0, 16)), rd(c.rand.range(150, 210)), h[i]);
+  for (let i = n - 1; i >= 0; i--) B.hop(0, rd(c.rand.range(150, 210)), h[i]);
   settle(B, c);
 });
 
@@ -170,10 +173,10 @@ def('hills', { needs: 'hill', hz: false }, (B, c) => {
 def('upper', { needs: 'upper', hz: false }, (B, c) => {
   B.tag('upper', B.x);
   const n = 1 + (c.k > 0.45 ? 1 : 0) + (c.k > 0.8 && c.rand.chance(0.5) ? 1 : 0);
-  B.run(160, 'line');
+  B.run(110, 'line');
   const base = B.y;
-  let x = B.x + 80;
-  const total = n * 300 + 120;
+  let x = B.x + 60;
+  const total = n * 270 + 90;
   B.run(total, 'none');
   const stop = B.x;
   for (let i = 0; i < n; i++) {
@@ -190,12 +193,12 @@ def('upper', { needs: 'upper', hz: false }, (B, c) => {
   }
   B.runEggs(x - 40, stop, base, 'none');
   B.quiet.push([B.cur.x, stop]);
-  B.run(Math.max(0, x + 120 - stop), 'line');
+  B.run(Math.max(0, x + 90 - stop), 'line');
 });
 
 /* ───────────────────────── walkers ───────────────────────── */
 
-function walkerEncounter(B, c, { lead = 170, tail = 220, patrolMul = 1, speedMul = 1 } = {}) {
+function walkerEncounter(B, c, { lead = 130, tail = 170, patrolMul = 1, speedMul = 1 } = {}) {
   const patrol = rd(Math.max(96, P.walkerPatrol(c.d) * patrolMul + c.rand.range(-8, 8)));
   const speed = clamp(P.walkerSpeed(c.d) * speedMul + c.rand.range(-3, 3), 14, 52);
   const x0 = B.x;
@@ -239,7 +242,7 @@ def('walkerPair', { needs: 'walker' }, (B, c) => {
 function flyerEncounter(B, c, { high = false } = {}) {
   const ax = rd(P.flyerAx(c.d) + c.rand.range(-4, 6));
   const ay = rd(P.flyerAy(c.d) + c.rand.range(-2, 3));
-  const lead = 190, tail = 230;
+  const lead = 130, tail = 160;
   const x0 = B.x;
   B.run(lead + 2 * ax + 130 + tail, 'none');
   B.runEggs(x0 + 20, x0 + lead, B.y, 'line');
@@ -249,8 +252,13 @@ function flyerEncounter(B, c, { high = false } = {}) {
   const cy = high ? B.y - 92 : B.y - 52;
   B.flyer(cx, cy, ax, high ? Math.min(ay, 18) : ay, P.flyerPeriod(c.d) + c.rand.range(-0.2, 0.3), c.rand.range(0, 1));
   B.tag('flyer', x0 + lead);
-  const F = C * flightTime(0);
-  B.arc(cx - F / 2, B.y, 0, 5);
+  if (high) {
+    // a high moth is passed UNDER: the eggs run along the ground beneath it (an arc would invite a jump into it)
+    B.runEggs(x0 + lead + 10, x0 + lead + 2 * ax + 130, B.y, 'line');
+  } else {
+    const F = C * flightTime(0);
+    B.arc(cx - F / 2, B.y, 0, 5);          // a low swooper can be hopped or stomped: the arc shows the way over
+  }
 }
 def('flyer1', { needs: 'flyer' }, (B, c) => flyerEncounter(B, c, { high: false }));
 def('flyerHigh', { needs: 'flyer' }, (B, c) => flyerEncounter(B, c, { high: true }));
@@ -266,7 +274,7 @@ function spikeHop(B, c, w, cycle = null) {
   B.spikeArc(h, { n: 4 });
   return h;
 }
-const spikeW = (c) => rd(clamp(P.spikeW(c.d) + c.rand.range(-2, 2), 18, 34));
+const spikeW = (c) => rd(clamp(P.spikeW(c.d) + c.rand.range(-1, 1), 18, 34));
 
 def('spike1', { needs: 'spikes' }, (B, c) => {
   B.run(30, 'none');
@@ -326,7 +334,6 @@ def('spikeGap', { needs: 'spikes' }, (B, c) => {
 function springLedge(B, c, { two = false } = {}) {
   if (B.y < 274) { B.fail('springHeight'); return; }
   const lead = 220;
-  const x0 = B.x;
   B.run(lead, 'line');
   const sx = B.x + 20;                 // spring centre
   B.run(40 + 360 + (two ? 240 : 0), 'none');
@@ -358,7 +365,6 @@ function springLedge(B, c, { two = false } = {}) {
     B.egg(L2.x + lw * 0.3, L2.y - 26); gold(B, L2.x + lw * 0.6, L2.y - 30);
   }
   B.run(180, 'line');
-  void x0;
 }
 def('springLedge', { needs: 'spring', springy: true }, (B, c) => springLedge(B, c));
 def('springTwo', { needs: 'spring', springy: true }, (B, c) => springLedge(B, c, { two: true }));
@@ -428,6 +434,11 @@ def('crumbleBridge', { needs: 'crumble' }, (B, c) => {
 
 /* ───────────────────────── stepping ledges over a pit (logs, planks, bridges) ───────────────────────── */
 
+/**
+ * Stepping logs over the flood. In Reedwater (the water landscape) the logs BOB a little (a swing of 5-8 u, period
+ * ~4 s: "the logs bob up and down"): small enough that every window of the static chain still holds, and the chain is
+ * validated with extra slack (0.27 s instead of 0.2 s) to cover the +-8 u of height.
+ */
 def('logs', { needs: 'logs' }, (B, c) => {
   B.tag('logs', B.x);
   const n = c.k < 0.35 ? 3 : c.k < 0.7 ? 4 : 6;
@@ -435,7 +446,14 @@ def('logs', { needs: 'logs' }, (B, c) => {
   for (let i = 0; i < n; i++) specs.push({ kind: 'ledge', gap: gapW(c, -10), w: ledgeW(c), dy: dyJit(c, 16), gold: i === 2 && c.rand.chance(0.25) });
   specs.push({ kind: 'ground', gap: gapW(c, -7), w: landW(c), dy: 0 });
   fixHeights(B, specs);
-  B.train(specs);
+  const bob = c.ch === 2;
+  const res = B.train(specs, bob ? { minSecs: 0.27 } : {});
+  if (bob && !B.bad) {
+    for (const p of res.plats) {
+      if (p.kind !== 'ledge') continue;
+      p.motion = { axis: 'y', amp: rd(c.rand.range(5, 8)), period: Math.round(c.rand.range(3.4, 4.6) * 100) / 100, phase: Math.round(c.rand.range(0, 2 * Math.PI) * 100) / 100 };
+    }
+  }
 });
 
 /** Broken spans: a deck of big and small pieces; the small ones need a second landing planned. */
@@ -445,7 +463,7 @@ def('bridge', { needs: 'bridge' }, (B, c) => {
   const specs = [];
   let big = true;
   for (let i = 0; i < n; i++) {
-    specs.push({ kind: 'ground', gap: gapW(c, big ? 0 : 2), w: big ? rd(c.rand.range(180, 260)) : islW(c), dy: 0, h: 120, gold: !big && i === 1 && c.rand.chance(0.3) });
+    specs.push({ kind: 'ground', gap: gapW(c, big ? -5 : -3), w: big ? rd(c.rand.range(180, 260)) : islW(c), dy: 0, h: 140, gold: !big && i === 1 && c.rand.chance(0.3) });
     big = !big || c.rand.chance(0.35);
   }
   specs.push({ kind: 'ground', gap: gapW(c), w: landW(c), dy: 0 });
@@ -486,7 +504,7 @@ def('treasure', { needs: 'upper', hz: false }, (B, c) => {
   B.arc(L.x + 30 - C * flightTime(-h), base, -h, 3);
   gold(B, L.x + w * 0.5, L.y - 30);
   B.egg(L.x + w * 0.2, L.y - 26); B.egg(L.x + w * 0.8, L.y - 26);
-  if (c.ch >= 2 && c.rand.chance(0.5) && B.x - B.lastShield > 5000) { B.pickup('shield', L.x + w * 0.5, L.y - 70); B.lastShield = B.x; B.tag('shield', L.x); }
+  if (c.ch >= 2 && c.rand.chance(0.5) && B.x - B.lastShield > 5000) { B.pickup('shield', L.x + w * 0.5, L.y - 34); B.lastShield = B.x; B.tag('shield', L.x); }
   B.runEggs(x - 40, B.x, base, 'line');
   B.quiet.push([x - 80, B.x]);
   B.run(120, 'none');
