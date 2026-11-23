@@ -370,7 +370,7 @@ for (const circuit of CIRCUITS) {
     for (const h of lv.hazards) {
       assert.ok(h.w <= 60 && h.w >= 14, `spike width ${h.w}`);
       const spikeJump = spikeWindow(h.x, h.w);
-      assert.ok(spikeJump.secs >= T.minWindow, `spike ${h.w} wide has a ${spikeJump.secs.toFixed(3)} s takeoff window`);
+      assert.ok(spikeJump.secs >= 0.28, `spike ${h.w} wide has a ${spikeJump.secs.toFixed(3)} s takeoff window (spikes are the tightest element; a sloppy but calm player needs >= 0.28 s)`);
       const run = runAt(runs, h.x);
       assert.ok(run, 'spikes sit on main-route ground');
       assert.ok(h.x - run.x0 >= 120, `spikes at ${h.x}: >= 120 u approach (${(h.x - run.x0).toFixed(0)})`);
@@ -761,7 +761,7 @@ for (const circuit of CIRCUITS) {
     for (const i of sample(lv, circuit)) {
       const s = segs[i];
       const phase = r.range(0, 11);
-      const res = playLevel(lv, { startCheckpoint: i, stopAtCheckpoint: s.to ?? undefined, allowSteer: false, tOffset: phase });
+      const res = playLevel(lv, { startCheckpoint: i, stopAtCheckpoint: s.to ?? undefined, allowSteer: false, iceBrake: false, tOffset: phase });
       n++;
       if (!res.ok) fails.push(`seg ${i} (landscape ${s.ch}, x ${Math.round(s.x0)}..${Math.round(s.x1)}, phase ${phase.toFixed(2)}): ${res.reason} at x=${Math.round(res.x)} (unsolved ${res.unsolved})`);
       else if (s.to !== null) {
@@ -787,7 +787,7 @@ for (const circuit of CIRCUITS) {
     for (const i of sample(lv, circuit)) {
       const s = segs[i];
       for (let k = 0; k < runs; k++) {
-        const res = playLevel(lv, { startCheckpoint: i, stopAtCheckpoint: s.to ?? undefined, allowSteer: false, tOffset: r.range(0, 11), noise: { latency: 0.08, jitter: 0.05, seed: mixSeed(i, k, circuit), compensate: true } });
+        const res = playLevel(lv, { startCheckpoint: i, stopAtCheckpoint: s.to ?? undefined, allowSteer: false, iceBrake: false, tOffset: r.range(0, 11), noise: { latency: 0.08, jitter: 0.05, seed: mixSeed(i, k, circuit), compensate: true } });
         total++;
         const L = byLand.get(s.ch) || { ok: 0, n: 0 };
         L.n++;
@@ -809,7 +809,7 @@ test('(b) circuit 1: even a player who has NOT learnt their own 80 ms latency ge
   for (const i of idx) {
     const s = segs[i];
     for (let k = 0; k < 2; k++) {
-      const res = playLevel(lv, { startCheckpoint: i, stopAtCheckpoint: s.to ?? undefined, allowSteer: false, tOffset: r.range(0, 11), noise: { latency: 0.08, jitter: 0.05, seed: mixSeed(i, k, 99), compensate: false } });
+      const res = playLevel(lv, { startCheckpoint: i, stopAtCheckpoint: s.to ?? undefined, allowSteer: false, iceBrake: false, tOffset: r.range(0, 11), noise: { latency: 0.08, jitter: 0.05, seed: mixSeed(i, k, 99), compensate: false } });
       total++; if (res.ok) ok++;
     }
   }

@@ -75,12 +75,14 @@ async function journey(browser, server) {
 
     // ── swipes (real touch) ──
     await sleep(700);                                                        // past the ease-in
+    // an in-page sampler (every frame) so a short jump cannot slip between two slow polls
+    await page.evaluate(() => { const a = window.__air = { minY: Infinity, up: false, ground: window.__egg.game().mama.y }; const f = () => { const m = window.__egg.game().mama; if (!m.onGround) { a.minY = Math.min(a.minY, m.y); if (m.vy < 0) a.up = true; } a.id = requestAnimationFrame(f); }; f(); });
     await doSwipe(cdp, 'up');
-    let air = false;
-    for (let i = 0; i < 12 && !air; i++) { await sleep(25); const m = (await st(page)).mama; air = !m.onGround && m.vy < 0; }
-    t.ok(air, 'swipe up: Mama jumps (airborne, vy < 0)');
     await sleep(120);
     await shot(page, 'game-03-jump');
+    await sleep(700);
+    const air = await page.evaluate(() => { cancelAnimationFrame(window.__air.id); return window.__air; });
+    t.ok(air.up && air.ground - air.minY > 60, `swipe up: Mama jumps (rose ${(air.ground - air.minY).toFixed(0)} u, vy < 0)`, air);
     await waitFor(page, () => window.__egg.state().mama.onGround, null, 3000);
     await sleep(500);
     const base = (await st(page)).mama.vx;
@@ -130,6 +132,7 @@ async function journey(browser, server) {
     t.ok(!!gap, 'there is a gap ahead to fall into', gap);
     await page.evaluate(() => { const g = window.__egg.game(); g.flock = 2; g.shield = false; });
     await page.evaluate((x) => window.__egg.teleport(x - 90), gap.edge);
+    gap.cp = await page.evaluate(() => window.__egg.level().checkpoints[window.__egg.game().checkpoint].x);   // the flag the teleport left her at
     await waitFor(page, () => window.__egg.state().mama.y > 330 || window.__egg.state().flock < 2, null, 8000);
     await sleep(250);
     s = await st(page);
@@ -158,7 +161,8 @@ async function journey(browser, server) {
     t.ok(s.status === 'running' && s.ui === null, `Retry starts play at once (${dt} ms including the tap)`);
     t.ok(await page.evaluate(() => window.__egg.level() === window.__lvl0), 'Retry keeps the same world object (never regenerated)');
     t.ok(Math.abs(s.mama.x - cpX) < 40 && s.checkpoint === 2, `Retry puts her on the saved flag (x ${s.mama.x.toFixed(0)}, flag ${s.checkpoint})`);
-    t.ok(s.eggs === saved.eggs && s.score === saved.score && s.flock === saved.flock, `Retry restores the saved totals (eggs ${s.eggs}, score ${s.score}, flock ${s.flock})`);
+    // (an egg may sit right at the flag: she can pick it up again within the ~150 ms between the tap and this read)
+    t.ok(s.eggs >= saved.eggs && s.eggs <= saved.eggs + 2 && s.score - saved.score === 10 * (s.eggs - saved.eggs) && s.flock === saved.flock, `Retry restores the saved totals, not the failed attempt's (saved ${saved.eggs}/${saved.score}/${saved.flock}, now ${s.eggs}/${s.score}/${s.flock})`);
     await sleep(1500);
     t.ok((await st(page)).mama.x > s.mama.x + 30, 'and she rolls again (ease-in)');
 
@@ -173,7 +177,7 @@ async function journey(browser, server) {
     s = await st(page);
     t.ok(s.mama.x === frozenX && s.t === frozenT, 'nothing runs while paused (sim time and position frozen)');
     const txt = await page.evaluate(() => document.querySelector('[data-screen=pause]').innerText.replace(/\s+/g, ' '));
-    t.ok(/Landscape 1 of 13/.test(txt) && /Meadow/.test(txt) && /% to the beacon/.test(txt) && /eggs/.test(txt) && /score/.test(txt) && /flock \d\/5/.test(txt), 'the pause screen shows landscape, progress, eggs, score and flock', txt.slice(0, 200));
+    t.ok(/Landscape 1 of 13/i.test(txt) && /Meadow/i.test(txt) && /% to the beacon/i.test(txt) && /eggs/i.test(txt) && /score/i.test(txt) && /flock \d\/5/i.test(txt), 'the pause screen shows landscape, progress, eggs, score and flock', txt.slice(0, 200));
     await shot(page, 'game-09-pause');
     await tapSelector(page, cdp, '[data-screen=pause] [data-action=resume]');
     await waitFor(page, () => window.__egg.state().mode === 'playing');
@@ -234,7 +238,7 @@ async function journey(browser, server) {
     const afterBeacon = { eggs: s.eggs, score: s.score, flock: s.flock };
     t.ok(afterBeacon.score >= carry.score + 500 && afterBeacon.eggs >= carry.eggs, `finish screen (score includes the +500 beacon bonus: ${afterBeacon.score})`);
     const ftxt = await page.evaluate(() => document.querySelector('[data-screen=finish]').innerText.replace(/\s+/g, ' '));
-    t.ok(/Circuit 1 complete/.test(ftxt) && /beacon is lit/i.test(ftxt), 'finish screen names the circuit just completed', ftxt.slice(0, 120));
+    t.ok(/Circuit 1 complete/i.test(ftxt) && /beacon is lit/i.test(ftxt), 'finish screen names the circuit just completed', ftxt.slice(0, 120));
     await shot(page, 'game-13-finish');
 
     // ── Keep Going ──
@@ -244,7 +248,7 @@ async function journey(browser, server) {
     await waitFor(page, () => window.__egg.state().fade === 0, null, 4000);
     s = await st(page);
     t.ok(s.circuit === 2 && s.status === 'running' && s.mama.x < 600, `Keep Going: circuit 2, a fresh Meadow, rolling (x ${s.mama.x.toFixed(0)})`);
-    t.ok(s.eggs === afterBeacon.eggs && s.score === afterBeacon.score && s.flock === afterBeacon.flock, `flock, eggs and score carried (${s.eggs}/${s.score}/${s.flock})`);
+    t.ok(s.eggs >= afterBeacon.eggs && s.eggs <= afterBeacon.eggs + 2 && s.score - afterBeacon.score === 10 * (s.eggs - afterBeacon.eggs) && s.flock === afterBeacon.flock, `flock, eggs and score carried (${afterBeacon.eggs}/${afterBeacon.score}/${afterBeacon.flock} -> ${s.eggs}/${s.score}/${s.flock})`);
     t.ok(await page.evaluate(() => window.__egg.level() !== window.__lvl0 && window.__egg.level().circuit === 2), 'a different world (circuit 2)');
     t.ok(s.stored && s.stored.circuit === 2 && s.stored.chapter === 0 && s.stored.flag === 0 && s.stored.eggs === afterBeacon.eggs, 'circuit 2 is saved', s.stored);
     t.ok(s.audio.song === 'meadow', 'music returns to the Meadow song');
@@ -263,7 +267,7 @@ async function journey(browser, server) {
     await tapSelector(page, cdp, '[data-screen=title] [data-action=continue]');
     await waitFor(page, () => window.__egg.state().mode === 'playing');
     s = await st(page);
-    t.ok(s.circuit === 2 && s.checkpoint === 0 && s.mama.x < 600 && s.eggs === afterBeacon.eggs, 'Continue opens at the saved flag (circuit 2, the Meadow start)');
+    t.ok(s.circuit === 2 && s.checkpoint === 0 && s.mama.x < 600 && s.eggs >= afterBeacon.eggs && s.eggs <= afterBeacon.eggs + 2, 'Continue opens at the saved flag (circuit 2, the Meadow start)', s);
     await sleep(500);
     await tapSelector(page, cdp, '#pause-btn');
     await waitFor(page, () => window.__egg.state().ui === 'pause'); await settle(page);
@@ -552,10 +556,10 @@ async function otherPhones(browser, server) {
       await sleep(1300);
       const swp = (a, b) => swipe(cdp, a, b, { steps: 6, stepMs: 8 });
       const W = vp.width, H = vp.height;
+      const j0 = await page.evaluate(() => window.__egg.game().stats.jumps);
       await swp({ x: W * 0.35, y: H * 0.8 }, { x: W * 0.35, y: H * 0.45 });
-      let air = false;
-      for (let i = 0; i < 10 && !air; i++) { await sleep(25); const m = (await st(page)).mama; air = !m.onGround; }
-      t.ok(air, 'swipe up jumps');
+      await sleep(300);
+      t.ok(await page.evaluate((n) => window.__egg.game().stats.jumps > n, j0), 'swipe up jumps');
       await waitFor(page, () => window.__egg.state().mama.onGround, null, 3000);
       await sleep(400);
       const v0 = (await st(page)).mama.vx;

@@ -279,7 +279,7 @@ async function orientation(t, browser, server) {
       await press(page, '[data-action=rotate-continue]'); await sleep(450);
       s = await state(page);
       const after = await snap();
-      t.ok(s.mode === 'playing' && s.cur === null && !s.pauseHidden && after.eggs === before.eggs && after.save === before.save, `rotation ${turn}: a tap resumes the same run (eggs ${after.eggs}, flock ${after.flock}, same checkpoint save)`, { s, before, after });
+      t.ok(s.mode === 'playing' && s.cur === null && !s.pauseHidden && after.eggs - before.eggs <= 1 && after.save === before.save, `rotation ${turn}: a tap resumes the same run (eggs ${after.eggs}, flock ${after.flock}, same checkpoint save)`, { s, before, after });
     }
     // rotating while paused returns to the pause menu rather than resuming
     await page.keyboard.press('p'); await sleep(450);

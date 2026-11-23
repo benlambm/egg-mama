@@ -86,6 +86,7 @@ let titleWarm = false;                         // the current landscape's sprite
 let preloadedSlot = -1, preloadedNext = -1, preloadCheck = 0;
 const levelCache = new Map();                  // 'seed:circuit' -> level (at most two: this circuit and the next)
 const actionLog = [];                          // debug: every action Input classified
+const auto = { on: false, god: false, bot: null, n: 0, respawns: 0, cp: 0, skips: 0, lastX: 0, lastT: 0 };   // debug autoplay for soak tests (never on in a normal run)
 
 const stepper = new FixedStepper(T.step, T.maxFrame);
 let adaptive = new AdaptiveRes({ deviceDpr: window.devicePixelRatio || 1 });
@@ -597,9 +598,10 @@ function tick(now) {
   const stepping = mode === 'playing' || mode === 'title';
   if (stepping) {
     const n = stepper.advance(dt, speed);
-    for (let i = 0; i < n; i++) step(game, mode === 'playing' ? input.held : NOHELD, T.step);
+    for (let i = 0; i < n; i++) { if (auto.on && mode === 'playing') autoPre(game); step(game, mode === 'playing' ? input.held : NOHELD, T.step); }
     const ev = drainEvents(game);
     if (ev.length) processEvents(ev);
+    if (auto.on && mode === 'playing') autoPost(ev);
     if (mode === 'playing') {
       playSeconds += Math.min(dt, 0.25);
       const st = game.status;
@@ -699,6 +701,7 @@ function autopilot(g) {
   const m = g.mama;
   if (g.status !== 'running' || !m.onGround || !m.ground || m.buffer > 0) return;
   const gnd = m.ground, end = gnd.cx + gnd.w;
+  if (m.vx < 25 && m.rollIn > 1.2) { act(g, 'jump'); return; }                      // blocked by a wall step: hop it
   if (end - m.x < 12 && !g.platforms.some((p) => p !== gnd && p.kind === 'ground' && p.x <= end + 2 && p.x + p.w > end + 4 && Math.abs(p.cy - gnd.cy) < 30)) { act(g, 'jump'); return; }
   for (const h of g.level.hazards) { const d = h.x - m.x; if (d > 18 && d < 46) { act(g, 'jump'); return; } if (d > 60) break; }
   for (const e of g.enemies) { if (e.defeated || e.kind !== 'walker') continue; const d = e.x - m.x; if (d > 20 && d < 66 && Math.abs(e.y - m.y) < 8) { act(g, 'jump'); return; } }
@@ -727,65 +730,106 @@ function groundUnder(g, x) {
   return best;
 }
 
+/** Put Mama on the ground at x (a fresh game from the checkpoint at or before x; `flag` overrides which). */
+function teleport(x, { flag, keepStatus = true } = {}) {
+  const running = mode === 'playing' && game.status === 'running';
+  const idx = flag !== undefined ? flag : cpIndexAt(level, x);
+  const g = createGame(level, snapshotCarry(game), { checkpoint: idx });
+  const p = groundUnder(g, x), m = g.mama;
+  m.x = m.px = x; m.y = m.py = p ? p.cy : m.y; m.vx = T.cruise; m.vy = 0; m.onGround = true; if (p) m.ground = p; m.phase = x; m.rollIn = 99; m.face = 1;
+  g.slot = chapterSlotAt(level, x);
+  g.shield = game.shield; g.magnet = game.magnet;
+  for (const q of g.pickups) if (q.x < x - 40) q.taken = true;
+  for (const c of level.cues) if (c.x < x) g.cuesShown.add(c);
+  g.hist.x.fill(x - 30); g.hist.y.fill(m.y); g.hist.n = 600;
+  step(g, NOHELD); drainEvents(g);
+  if (running && keepStatus) { startRun(g); m.vx = T.cruise; m.rollIn = 99; m.invuln = 0.5; }
+  adopt(g);
+  if (mode === 'playing') audio.playSong(songFor(songs.index, level.circuit), { fade: 0.4 });
+  return { x: m.x, checkpoint: g.checkpoint };
+}
+
+
+/** Debug autoplay: god mode (a duckling is always there) and/or the edge autopilot; a segment that keeps failing is skipped. */
+function autoPre(g) {
+  const m = g.mama;
+  if (auto.god) { m.invuln = Math.max(m.invuln, 0.5); if (g.flock < 1) g.flock = 1; }
+  if (auto.bot && (auto.n++ % 12) === 0) (auto.bot === 'plan' ? plannerBot : autopilot)(g);
+}
+function autoPost(events) {
+  if (!auto.god) return;
+  for (let i = 0; i < events.length; i++) if (events[i].type === 'respawn') auto.respawns++;
+  if (game.checkpoint !== auto.cp) { auto.cp = game.checkpoint; auto.respawns = 0; }
+  if (Math.abs(game.mama.x - auto.lastX) > 40 || game.t < auto.lastT) { auto.lastX = game.mama.x; auto.lastT = game.t; }
+  else if (game.t - auto.lastT > 8) { auto.respawns = 3; auto.lastT = game.t; }                  // no progress for 8 s: give this segment up
+  if (auto.respawns >= 3 && game.status === 'running') {
+    const idx = Math.min(level.checkpoints.length - 1, game.checkpoint + 1);
+    teleport(level.checkpoints[idx].x + 5, { flag: idx });
+    auto.respawns = 0; auto.skips++; auto.lastX = game.mama.x; auto.lastT = game.t;
+  }
+}
+
 function installDebug() {
   const clone = (o) => { try { return o == null ? o : JSON.parse(JSON.stringify(o)); } catch { return null; } };
   const stored = () => { try { return JSON.parse(storage.getItem('egg-mama-save-v2')); } catch { return null; } };
   const pct = (arr, n, p) => { const a = Array.from(arr.subarray(0, Math.min(n, arr.length))).filter((v) => v > 0).sort((x, y) => x - y); return a.length ? +a[Math.min(a.length - 1, Math.floor(a.length * p))].toFixed(2) : 0; };
 
-  /** Put Mama on the ground at x (a fresh game from the checkpoint at or before x; `flag` overrides which). */
-  function teleport(x, { flag, keepStatus = true } = {}) {
-    const running = mode === 'playing' && game.status === 'running';
-    const idx = flag !== undefined ? flag : cpIndexAt(level, x);
-    const g = createGame(level, snapshotCarry(game), { checkpoint: idx });
-    const p = groundUnder(g, x), m = g.mama;
-    m.x = m.px = x; m.y = m.py = p ? p.cy : m.y; m.vx = T.cruise; m.vy = 0; m.onGround = true; if (p) m.ground = p; m.phase = x; m.rollIn = 99; m.face = 1;
-    g.slot = chapterSlotAt(level, x);
-    g.shield = game.shield; g.magnet = game.magnet;
-    for (const q of g.pickups) if (q.x < x - 40) q.taken = true;
-    for (const c of level.cues) if (c.x < x) g.cuesShown.add(c);
-    g.hist.x.fill(x - 30); g.hist.y.fill(m.y); g.hist.n = 600;
-    step(g, NOHELD); drainEvents(g);
-    if (running && keepStatus) { startRun(g); m.vx = T.cruise; m.rollIn = 99; m.invuln = 0.5; }
-    adopt(g);
-    if (mode === 'playing') audio.playSong(songFor(songs.index, level.circuit), { fade: 0.4 });
-    return { x: m.x, checkpoint: g.checkpoint };
-  }
-
   /** Step the sim without drawing, through the same event handling as the real loop (saves, songs, state). */
   function fastForward(seconds, { bot = false, god = false, stopAtEvent = null } = {}) {
-    const out = { steps: 0, events: {}, stuck: 0, dead: false, beacon: false, x0: game.mama.x, x1: 0, t: 0 };
-    const n = Math.round(seconds / T.step);
-    const useBot = bot === true || bot === 'edge' ? autopilot : bot === 'plan' ? plannerBot : null;
-    let lastCp = game.checkpoint, respawns = 0;
-    for (let i = 0; i < n; i++) {
-      if (game.status !== 'running') break;
-      const m = game.mama;
-      if (god) { m.invuln = Math.max(m.invuln, 0.5); if (game.flock < 1) game.flock = 1; }
-      if (useBot && i % 12 === 0) useBot(game);
-      step(game, NOHELD, T.step);
-      out.steps++;
-      const ev = drainEvents(game);
-      if (ev.length) {
-        for (const e of ev) {
-          out.events[e.type] = (out.events[e.type] || 0) + 1;
-          if (e.type === 'respawn') respawns++;
+    const out = { steps: 0, events: {}, dead: false, beacon: false, x0: game.mama.x, x1: 0, t: 0, skips: 0 };
+    const saved = { ...auto };
+    auto.god = !!god; auto.bot = bot ? (bot === 'plan' ? 'plan' : 'edge') : null; auto.on = auto.god || !!auto.bot;
+    const skips0 = auto.skips, n = Math.round(seconds / T.step);
+    try {
+      for (let i = 0; i < n && game.status === 'running'; i++) {
+        if (auto.on) autoPre(game);
+        step(game, NOHELD, T.step);
+        out.steps++;
+        const ev = drainEvents(game);
+        if (ev.length) {
+          for (const e of ev) out.events[e.type] = (out.events[e.type] || 0) + 1;
+          processEvents(ev, true);
+          if (auto.on) autoPost(ev);
+          if (stopAtEvent && ev.some((e) => e.type === stopAtEvent)) break;
         }
-        processEvents(ev, true);
-        if (stopAtEvent && ev.some((e) => e.type === stopAtEvent)) break;
+        playSeconds += T.step;
       }
-      if (game.checkpoint !== lastCp) { lastCp = game.checkpoint; respawns = 0; }
-      if (god && respawns >= 3) { teleport(level.checkpoints[Math.min(level.checkpoints.length - 1, game.checkpoint + 1)].x + 5, { flag: Math.min(level.checkpoints.length - 1, game.checkpoint + 1) }); respawns = 0; out.stuck++; }
-      playSeconds += T.step;
-    }
+    } finally { Object.assign(auto, { god: saved.god, bot: saved.bot, on: saved.on }); }
     out.dead = game.status === 'dead'; out.beacon = game.status === 'beacon';
-    out.x1 = game.mama.x; out.t = game.t;
+    out.x1 = game.mama.x; out.t = game.t; out.skips = auto.skips - skips0;
     return out;
+  }
+
+  /** Step the sim (events handled quietly) until `done()`, at most `maxSeconds` of game time. */
+  function stepUntil(done, maxSeconds) {
+    for (let i = 0, n = Math.round(maxSeconds / T.step); i < n && !done(); i++) {
+      step(game, NOHELD, T.step);
+      const ev = drainEvents(game);
+      if (ev.length) processEvents(ev, true);
+    }
+  }
+  /** A real fall with nothing to lose, then straight to the dead screen (no waiting for T.deadSeconds). */
+  function skipToDead() {
+    if (!egg.forceDead()) return false;
+    stepUntil(() => game.status === 'dead' && game.statusT >= T.deadSeconds, 6);
+    if (game.status === 'dead') enterDead();
+    return game.status === 'dead';
+  }
+  /** The real beacon event, then straight to the finish screen. */
+  function skipToFinish() {
+    if (!egg.forceBeacon()) return false;
+    stepUntil(() => game.status === 'beacon' && game.statusT >= FINISH_DELAY, 8);
+    if (game.status === 'beacon') enterFinish();
+    return game.status === 'beacon';
   }
 
   const egg = {
     renderer, audio, ui, input, adaptive: () => adaptive, SONGS,
     game: () => game, level: () => level,
     teleport, fastForward,
+    /** Autoplay in the REAL loop (drawn, with audio): god mode + the edge autopilot; `skips` counts segments it gave up on. */
+    autoplay(on = true, { god = true, bot = 'edge' } = {}) { auto.god = !!on && !!god; auto.bot = on ? bot : null; auto.on = auto.god || !!auto.bot; auto.respawns = 0; return { ...auto }; },
+    auto,
     setSpeed(m) { speed = clamp(+m || 1, 0.1, 16); return speed; },
     forceBeacon() {
       if (mode !== 'playing' || game.status !== 'running') return false;
@@ -794,10 +838,11 @@ function installDebug() {
     },
     forceDead() {
       if (mode !== 'playing' || game.status !== 'running') return false;
-      game.flock = 0; game.shield = false; game.mama.invuln = 0; game.mama.y = T.killY + 5;
+      const m = game.mama;
+      game.flock = 0; game.shield = false; m.invuln = 0; m.onGround = false; m.vy = 0; m.y = m.py = T.killY + 5;   // out of the world: a real fall
       return true;
     },
-    /** Pause / hide / rotate helpers for tests that cannot do those things for real. */
+    skipToDead, skipToFinish,
     pause: () => pauseGame(),
     state() {
       const m = game && game.mama;
@@ -851,6 +896,8 @@ function installDebug() {
     throwInFrame() { const was = renderer.draw; renderer.draw = () => { throw new Error('debug: draw failed'); }; return () => { renderer.draw = was; }; },
   };
   window.__egg = egg;
+  // the placeholder's debug keys, kept for tests/e2e/shell-flow.mjs: K = fall out of the world (dead screen), B = light the beacon
+  window.addEventListener('keydown', (e) => { if (mode !== 'playing' || e.repeat) return; if (e.key === 'k') skipToDead(); else if (e.key === 'b') skipToFinish(); });
 
   // The surface tests/e2e/shell-*.mjs were written against (they drove a placeholder): ui, input, mode, save, settings, actionLog, run, ...
   window.__shell = {
@@ -859,9 +906,14 @@ function installDebug() {
     get save() { return save; },
     get settings() { return settings; },
     get view() { return renderer.view; },
-    get run() { return { eggs: game ? game.eggs : 0, score: game ? game.score : 0, flock: game ? game.flock : 0, playSeconds }; },
+    run: {
+      get eggs() { return game ? game.eggs : 0; }, set eggs(v) { if (game) game.eggs = v; },
+      get score() { return game ? game.score : 0; }, set score(v) { if (game) game.score = v; },
+      get flock() { return game ? game.flock : 0; }, set flock(v) { if (game) game.flock = v; },
+      get playSeconds() { return playSeconds; }, set playSeconds(v) { playSeconds = v; },
+    },
     setMode(m) { setMode(m); },
-    startRun() { if (mode === 'title') startFromTitle(); },
+    startRun() { ui.hide(); if (mode !== 'title') setMode('title'); startFromTitle(); },
     showTitle, pauseGame,
   };
 }
