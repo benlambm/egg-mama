@@ -10,8 +10,8 @@
  *
  * It only ever carves where that is certainly fair: inside one long static ground platform with >= 260 u of ground on each
  * side (so it is a normal, easy hop with the window of any gap of that difficulty, checked with trainFeasible), >= 330 u (3 s) from
- * every other event, clear of every flag's safe zone, optional ledge, spring, golden egg and pickup, not in the first 1100 u of a landscape
- * (its quiet opening is 860 u), not in the last 400 u (the join) and not before Meadow's first real gap. The gap is the landscape's own
+ * every other event, clear of every flag's safe zone, optional ledge, spring, golden egg and pickup, not in the first 800 u of a landscape
+ * (its quiet opening is 860 u), not in the last 400 u (the join; 740 u before Clover Mill) and not before Meadow's first real gap. The gap is the landscape's own
  * difficulty of the moment (P.gap) and each carve is logged as a 'gapCarve' beat of the act it falls in.
  */
 import { T, clamp } from '../tuning.mjs';
@@ -61,11 +61,17 @@ export function densify(B, ctx) {
   const inBreather = (x0, x1) => breathers.some((a) => x1 > a.x0 && x0 < a.x1);
   const firstGap = B.firsts.find((f) => f.ch === 0 && f.kind === 'gap');
   const noBefore = firstGap ? firstGap.x + 900 : 3000;
+  // the events are listed once and kept sorted as hops are carved (a carve adds exactly one: the end of the left half); pickups are indexed
+  // once by x (the carve checks run for every candidate position, and there are ~8 000 pickups)
+  const ev = eventSpans(B);
+  const ix = {
+    solid: B.picks.filter((q) => q.kind !== 'egg').map((q) => q.x).sort((p, q) => p - q),                       // golden eggs, shields, magnets
+    air: B.picks.filter((q) => q.kind === 'egg' && q.y < 262).sort((p, q) => p.x - q.x),                         // eggs that can hang above head height
+  };
   let carved = 0;
   const tried = new Set();
   for (let guard = 0; guard < 400; guard++) {
-    const ev = eventSpans(B);
-    // the longest wait that is not a breather's and has not been given up on
+    // the longest wait that has not been given up on (a breather's neighbourhood has a longer allowance)
     let worst = null;
     for (let i = 1; i < ev.length; i++) {
       const g = ev[i].x - ev[i - 1].x;
@@ -74,25 +80,39 @@ export function densify(B, ctx) {
       if (!worst || g > worst.g) worst = { g, prev: ev[i - 1], next: ev[i] };
     }
     if (!worst) break;
-    const key = worst.prev.x + ':' + worst.next.x;
-    if (!carveOne(B, ctx, rand, worst, noBefore, chapters, acts)) tried.add(key);
-    else carved++;
+    const x = carveOne(B, ctx, rand, worst, noBefore, chapters, acts, breathers, ix);
+    if (x === null) tried.add(worst.prev.x + ':' + worst.next.x);
+    else {
+      carved++;
+      let k = ev.findIndex((e) => e.x > x);
+      if (k < 0) k = ev.length;
+      ev.splice(k, 0, { x, a: x, b: x });
+    }
   }
   B.stats.carved = carved;
   return carved;
 }
 
-function carveOne(B, ctx, rand, { prev, next }, noBefore, chapters, acts) {
-  const breathers = acts.filter((a) => a.role === 'breather');
+/** First index of the sorted numbers `arr` that is >= x. */
+function lowerBound(arr, x, key = (v) => v) {
+  let lo = 0, hi = arr.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (key(arr[mid]) < x) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+
+function carveOne(B, ctx, rand, { prev, next }, noBefore, chapters, acts, breathers, ix) {
   const lo = prev.b + MARGIN, hi = next.a - MARGIN;             // the hop (its hole and landing) fits between these
-  if (hi - lo < 700) return false;
+  if (hi - lo < 700) return null;
   const mid = (prev.x + next.x) / 2;
   const grounds = B.plats.filter((p) => !p.o && p.kind === 'ground' && !p.motion && p.solid !== false && p.x + p.w > lo && p.x < hi && p.w >= 560);
-  if (!grounds.length) return false;
+  if (!grounds.length) return null;
   const optional = B.plats.filter((p) => p.o && p.x < hi + 200 && p.x + p.w > lo - 200);
-  const nearPick = (x0, x1) => B.picks.some((q) => q.x >= x0 && q.x <= x1 && q.kind !== 'egg');
+  const nearPick = (x0, x1) => { const k = lowerBound(ix.solid, x0); return k < ix.solid.length && ix.solid[k] <= x1; };
   const nearSpring = (x0, x1) => B.springs.some((s) => s.x >= x0 && s.x <= x1);
-  const arcEggs = (x0, x1, top) => B.picks.some((q) => q.kind === 'egg' && q.x >= x0 && q.x <= x1 && q.y < top - 62);       // eggs hung in the air above head height: an arc someone is meant to jump through
+  const arcEggs = (x0, x1, top) => {      // eggs hung in the air above head height: an arc someone is meant to jump through
+    for (let k = lowerBound(ix.air, x0, (q) => q.x); k < ix.air.length && ix.air[k].x <= x1; k++) if (ix.air[k].y < top - 62) return true;
+    return false;
+  };
   // try centres outward from the middle of the wait
   const span = hi - lo;
   for (let off = 0; off <= span / 2; off += 24) {
@@ -109,7 +129,7 @@ function carveOne(B, ctx, rand, { prev, next }, noBefore, chapters, acts) {
       if (e0 < lo || e1 > hi) continue;
       if (e0 - host.x < 260 || host.x + host.w - e1 < 260) continue;
       if (breathers.some((br) => e1 > br.x0 - 150 && e0 < br.x1 + 150)) continue;
-      if (e0 < ch.x0 + 1100 || e1 > ch.x1 - 400 || e0 < noBefore || e1 > ctx.endX - 1500) continue;
+      if (e0 < ch.x0 + 800 || e1 > ch.x1 - (ch.index === 0 ? 740 : 400) || e0 < noBefore || e1 > ctx.endX - 1500) continue;
       if (B.cps.some((c) => c.x > e0 - 480 && c.x < e1 + 330)) continue;                 // clear of every flag's safe zone (and the flag stays on a >= 250 u run)
       if (optional.some((o) => o.x < e1 + 100 && o.x + o.w > e0 - 100)) continue;
       if (nearSpring(e0 - 120, e1 + 120) || nearPick(e0 - 30, e1 + 30)) continue;
@@ -142,10 +162,10 @@ function carveOne(B, ctx, rand, { prev, next }, noBefore, chapters, acts) {
         if (k < 0) k = act.beatX.length;
         if (act.beats[k - 1] !== 'crown' && !(act.finaleLast && k === act.beats.length)) { act.beats.splice(k, 0, 'gapCarve'); act.beatX.splice(k, 0, p); }       // (a set piece's last beat stays its crown)
       }
-      return true;
+      return e0;
     }
   }
-  return false;
+  return null;
 }
 
 function chapterAt(chapters, x) {

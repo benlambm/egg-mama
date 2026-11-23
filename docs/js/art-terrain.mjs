@@ -1390,11 +1390,11 @@ function drawMover(ctx, cache, s, p, ch, x, y, t) {
  * A hazard is a row of modules (one thorn / rock spike / crystal / urchin each, ~14-19 u wide) standing on the ground at
  * h.y. Plain spikes are always up. Cycling spikes (h.cycle) sit on a slotted plate: while inactive they are sunk
  * out of sight (the slots glint), during the warning they poke up and twitch, then they snap fully up while active.
- * Spikes are drawn a touch bigger than their hitbox and in the "danger" hues (red thorns, pale-tipped rock, hot crystal,
+ * Spikes are drawn clearly bigger than their hitbox (about 1.4x taller, and much wider than the 7-8 u hurt width) and in the "danger" hues (red thorns, pale-tipped rock, hot crystal,
  * orange-tipped urchin), so they read against every ground. */
 
 const SPIKE_MOD = { thorn: 14, stone: 16, crystal: 15, urchin: 19 };
-// QA-VISUAL: the hitbox is 16-20 u, but a 19 u cone is a speck on a phone and the first thing a child must read in a busy painting. The art is
+// QA-VISUAL: the hitbox is now only 7-8 u wide (the level generator made spikes narrower so the takeoff window is >= 0.4 s), but a 19 u cone is a speck on a phone and the first thing a child must read in a busy painting. The art is
 // drawn SPIKE_K times bigger than the module was authored (baked at that size, so it stays crisp), with a pale key-line around it so it pops
 // off dark paintings as well as bright ones, and a soft hot halo on the ground (see drawSpikes). Mama's hurtbox is far narrower than her art
 // (|dx| < 20 u hurts, her art overlaps the spike from ~29 u) so the bigger art only ever errs on the forgiving side.

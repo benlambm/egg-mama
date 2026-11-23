@@ -186,8 +186,10 @@ export const JOURNEY_SECONDS = CHAPTERS.reduce((sum, c) => sum + c.seconds, 0);
  * It rises SLOWLY and continuously with distance: 0 at the very start, ~11 at the beacon in circuit 1,
  * so each minute of play is only a hair harder than the one before. `within` (0..1) is how far through
  * the landscape you are, so difficulty glides across landscape boundaries instead of stepping.
- * Each later circuit starts around where the previous one ended (a little easier than its end,
- * since levelgen also adds more variety), and is capped so every jump stays within thumb-sized reach.
+ * NOTE: levelgen no longer reads this for the ramp across circuits: it uses params.levelDifficulty(), where
+ * circuit 2 is circuit 1 plus 4.5 and every later circuit has exactly circuit 2's ramp (capped at D_MAX 16),
+ * so a new circuit never starts harder than circuit 2's Meadow. This function keeps the plain circuit-1 shape
+ * (and its old per-circuit offset) for callers that only want a rough 0..20 number.
  */
 export function difficulty(chapter, circuit = 1, within = 0) {
   const progress = (chapter + within) / CHAPTERS.length;           // 0..1 through the circuit

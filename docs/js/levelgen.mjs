@@ -56,6 +56,7 @@ export function levelSeed(journeySeed, circuit) {
 
 const FLAG_OFFSET = 300;           // every landscape's first flag sits this far into it
 const JOIN = 300;                  // safe ground before a landscape boundary (the dissolve happens over it)
+const JOIN_MEADOW = 740;           // ...and before Clover Mill: no required event in the last 740 u of Meadow, so a Mama who just rolls on (or is teleported 700 u back in the e2e tests) reaches the second landscape
 const OPEN_LEN = 860;              // hazard-free stretch from the boundary (>= 700 required)
 
 /**
@@ -120,7 +121,7 @@ export function generateLevel({ circuit = 1, seed = 1, trace = null } = {}) {
 
     // ── the acts ──
     const plan = planFor(i, circuit, land, recent).filter((id) => id !== 'open');
-    const endTarget = last ? x1 + FLAG_OFFSET - 480 - 260 - 100 : x1 - JOIN;    // where the last act stops
+    const endTarget = last ? x1 + FLAG_OFFSET - 480 - 260 - 100 : x1 - (i === 0 ? JOIN_MEADOW : JOIN);    // where the last act stops
     B.joinFlagX = last ? endTarget + 300 : x1 + FLAG_OFFSET;
     let remaining = plan.reduce((s, id) => s + ACTS[id].w, 0);
     // events this landscape should ask for in all, shared among its acts by role (breathers and the opening ask none)

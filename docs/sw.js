@@ -17,7 +17,7 @@
 // Every copy this game keeps has a name starting with PREFIX. Other games on the same web address
 // (a GitHub Pages user site hosts many) keep copies of their own under other names.
 const PREFIX = 'egg-mama-';
-const VERSION = PREFIX + 'v-cebca6782c';
+const VERSION = PREFIX + 'v-a06c962859';
 
 const FILES = [
   './',

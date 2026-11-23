@@ -45,7 +45,7 @@ Add `?debug` to the URL to get `window.__egg` (teleport, fast-forward, force the
 
 | Command | What it checks |
 | --- | --- |
-| `FULL=1 node --test tests/levels.test.mjs` | A planner bot plays every flag-to-flag segment of three circuits, the static and window checks cover six (about 15 minutes) |
+| `FULL=1 node --test tests/levels.test.mjs` | A planner bot plays every flag-to-flag segment of three circuits, the static and window checks cover six (about 18 minutes) |
 | `node tools/level-report.mjs` | Per-landscape length, pacing, hazards and difficulty ramp of a generated circuit (`--bot`: the planner's jumps a minute; `--felt --bots`: the threat-weighted event ramp, dead stretches, variety and how a button-masher, a sloppy and a clumsy player fare; `--listing 6`: a landscape beat by beat) |
 | `node tools/audio-render.mjs` | Renders every song and effect offline and reports loudness, seams and mix margins |
 | `node tests/e2e/*.mjs` | Real Chromium (Playwright) checks of layout, input, rendering, audio lifecycle and the full game (run them one at a time) |

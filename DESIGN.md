@@ -122,7 +122,7 @@ is a normal, easy, safe stretch of ground (no gate, no pause) — the dissolve h
 
 **Structure of one landscape (3½–5⅓ minutes must *hold a child's attention*):** about 7 **acts**, each a
 small arc with its own character (measured over 16 000 acts: recall ≈ 28 s, teach / vary / combine ≈ 45 s, breather ≈ 15 s,
-closing ≈ 20 s, the set piece ≈ 60 s and never over 85 s): *recall* (easy re-use of what she already knows), *teach* (the landscape's signature
+closing ≈ 20 s, the set piece ≈ 60 s and never over ~86 s): *recall* (easy re-use of what she already knows), *teach* (the landscape's signature
 move, isolated — see `learn`), *vary*, *combine*, a **breather** (egg field / scenic stretch / flock moment — no hazards,
 15–25 s, a flag), a **set piece** (a memorable, hand-composed-feeling sequence unique to the landscape: the windmill
 yard, the floating-logs run, the quarry crane, the moth lanterns, the canyon spike run, the cliff lifts, the crystal
@@ -170,16 +170,17 @@ carry gaps but its required route is hops, logs and branch steps.
 per minute of its whole length (opening, join, breathers and flag stations included: what a child gets per minute of play);
 `liveDensity` = only the live acts (no opening, join, breathers or stations); `liveInclDensity` = everything but breathers and
 stations. Each exists raw and threat-weighted (`wDensity`, `wLiveDensity`, `wLiveInclDensity`). Measured (16 journeys, circuits 1-4):
-the threat-weighted ramps have Spearman ≥ 0.95 and no landscape under 0.93 of the one before; the raw ones ≥ 0.90 and ≥ 0.91
-(a moth and a spring are whole events there, so they ramp a little less cleanly: that is exactly why they are not the claim).
+the threat-weighted ramps have Spearman ≥ 0.96 and no landscape under 0.94 of the one before (the old generator: 0.79-0.87 and
+0.44-0.74, Fogwood being the hole); the raw ones ≥ 0.93 and ≥ 0.92 (a moth and a spring are whole events there, so they ramp a
+little less cleanly: that is exactly why they are not the claim).
 
 *The dead-stretch guard* (`levels/densify.mjs`). The controller's rests and the flag stations (600 u of guaranteed safe ground) leave a
 tail in the distribution of the wait between two required events. After the circuit is built, any wait over 18 s (20 s in Meadow
 and Clover Mill, 31 s where a breather act sits in it) gets one small hop CARVED into the flat ground between its events: a gap
 taken out of a long island, ≥ 260 u of ground each side, ≥ 3 s from every other event, clear of every flag's safe zone, the
-opening (860 u), the join (400 u), optional ledges and arcs of eggs, and a window checked with `trainFeasible` (≥ 0.42 s); nothing
+opening (860 u), the join (400 u; 740 u in Meadow), optional ledges and arcs of eggs, and a window checked with `trainFeasible` (≥ 0.42 s); nothing
 else moves. Measured: no run waits over 26 s for a required event in any landscape (it was 2.8-3.3 % of runs, 32 % in Clover Mill),
-the p90 of the waits is under 18.5 s everywhere.
+the p90 of the waits is under 18.5 s everywhere (the longest wait outside a breather: 25 s).
 
 *Circuits saturate.* `levelDifficulty` is chapters.difficulty() in circuit 1 (0 → ~11), the same 4.5 higher in circuit 2, and from
 circuit 3 on EXACTLY circuit 2's ramp, capped at `D_MAX` 16: a child who reaches circuit 3 has played two hours and still
@@ -192,7 +193,8 @@ starts as gently as circuit 2's Meadow, and no window ever drops below the floor
    Meadow's first golden egg is on flat safe ground within its first 700 u; its first required gap comes after that,
    ≤ 46 u wide with a ≥ 160 u landing, preceded by the tip caption. The first-appearance captions (`level.cues`, kind `tip`)
    also cover the first **wall** of a journey (a rise with no gap in front of it, where Mama stops dead until she is swiped up:
-   walls are rare, about 1 a landscape, and a rise is otherwise a small hop).
+   walls are rare, about 1 a landscape, and a rise is otherwise a small hop). The last 740 u of Meadow hold no required event either, so
+   a Mama who just rolls on (or is teleported back by the e2e tests) always reaches Clover Mill; the other joins keep 300 u.
 2. Every required jump is possible at the default cruise with one swipe: gap ≤ `min(T.maxGapHard, jumpDistance()-…)`, takeoff
    window ≥ `T.minWindow` seconds (compute from `jumpDistance`, `coyote`, `edgeForgive`, landing height difference).
    Swipe-right/left are optional helpers, never required. (Ice is slippery — Mama is slow to speed up and slow to slow down — but
@@ -209,7 +211,8 @@ starts as gently as circuit 2's Meadow, and no window ever drops below the floor
    flyers only over ground, never over a required landing. Spikes are 7–8 u wide (takeoff window 0.43–0.44 s in the sim, against
    0.45–0.57 s for the median gap hop; the art is drawn much bigger than the hitbox on purpose) with a ≥ 120 u approach and ≥ 250 u of
    room after a landing in the first two spike landscapes. A clumsy small child (120 ms of unnoticed latency, ±120 ms of jitter)
-   clears ≥ 88 % of Ember Canyon's segments (62 % with 14 u thorns), nothing under 83 %.
+   clears about 85-90 % of Ember Canyon's segments (measured 86-91 % over circuits 1-4, 6 journeys each; a single journey can read 78-92 %;
+   62 % with 14 u thorns) and 90-100 % of every other landscape's.
 6. Missing any egg never blocks completion. Golden eggs: roughly one per 40–60 s on/near the main route (≥ 5 per
    landscape reachable with at most one easy jump) + upper-route golden eggs (1–3 per act sequence) for harder jumps/springs.
    Ordinary eggs trace jump arcs over gaps, lines on the ground, arcs over enemies (traced from the real parabola).

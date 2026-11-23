@@ -23,10 +23,12 @@ export const def = (name, meta, fn) => { BEATS[name] = { name, hz: true, ...meta
 
 export const gapW = (c, extra = 0) => {
   // The first minutes vary a little, later ones more; and now and then a span that is clearly different from its neighbours, so
-  // a landscape does not read as the same hop again: early on LONGER (+3.5 .. +9 u, less and less as the gaps grow), later SHORTER
+  // a landscape does not read as the same hop again: early on LONGER (+3 u in Meadow, up to +9 u a little later, less and less as the gaps grow), later SHORTER
   // (-3.5 .. -8 u): the widest gap of a given difficulty never grows (every required hop keeps its measured window of >= 0.30 s).
   const d = c.d;
-  const odd = c.rand.chance(0.4) ? (d < 7 ? c.rand.range(3.5, 9 - 5 * clamp(d / 7, 0, 1)) : -c.rand.range(3.5, 8)) : 0;
+  // (in Meadow's first minutes only a little longer, +2.5 .. +3.2 u: a gap of 45 u still has a window of ~0.64 s)
+  const top = Math.min(3.2 + 5.8 * clamp((d - 1) / 3, 0, 1), 9 - 5 * clamp(d / 7, 0, 1));
+  const odd = c.rand.chance(0.4) ? (d < 7 ? c.rand.range(Math.min(3.5, top - 0.7), top) : -c.rand.range(3.5, 8)) : 0;
   return rd(clamp(P.gap(d) + extra + odd + c.rand.range(-3, 3) * clamp(d / 4, 0.25, 1), 22, T.maxGapHard - 2));
 };
 export const landW = (c) => rd(clamp(P.landing(c.d) + c.rand.range(-24, 24), T.minLanding + 14, 300));

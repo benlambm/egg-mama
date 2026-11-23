@@ -39,12 +39,15 @@ export function placeCues(B, chapters, beacon) {
     if (x < first.x - 120) add(x, CHAPTERS[i].tip, 'tip');
     else add(Math.max(ch.x0 + 60 + SPACING, first.x - 130), CHAPTERS[i].tip, 'tip');
   }
-  // the first shield and magnet in the world (and the first WALL: a rise with no gap in front of it, where Mama stops until she is swiped up; the first four landscapes build none)
+  // the first shield and magnet in the world (and the first WALL: a rise with no gap in front of it, where Mama stops until she is swiped up;
+  // Meadow and Clover Mill build a few, later landscapes now and then). The WALL caption is placed first so a shield / magnet tip never takes its
+  // place, and a caption that would sit on another one slides back (earlier) until it fits, up to ~1000 u (9 s) before the thing it announces.
   const tipFor = { shield: 'A blue shell blocks one hit', magnet: 'A magnet pulls eggs to you', wall: 'Stopped at a wall? Swipe up to hop on' };
-  for (const kind of ['shield', 'magnet', 'wall']) {
+  for (const kind of ['wall', 'shield', 'magnet']) {
     const f = B.firsts.filter((t) => t.kind === kind).sort((a, b) => a.x - b.x)[0];
     if (!f) continue;
-    const x = f.x - 200;
+    let x = f.x - 200;
+    for (let k = 0; k < 14 && near(x); k++) x -= 60;
     if (!near(x)) add(x, tipFor[kind], 'tip');
   }
   // trail lines in quiet stretches near their fractions
