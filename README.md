@@ -52,6 +52,16 @@ Add `?debug` to the URL to get `window.__egg` (teleport, fast-forward, force the
 | `node tests/e2e/game-spec.mjs` | Every requirement ID of SPEC.md (VIEW-1 ... AUDIO-2) as a named check, plus the traceability table in its header |
 | `node tests/e2e/game-attack.mjs` | Hostile input against the whole game: 24-flip rotate storms and background storms in every state, double-taps, reloads, blocked/full storage, offline play of all 13 landscapes, a service-worker update, safe-area insets, odd screen sizes, a 6x slower CPU, GitHub Pages layout checks |
 
+The long-run **soak** suites drive the real page (run them by hand, one at a time; each prints its own numbers and its usage is in its header):
+
+| Command | What it checks |
+| --- | --- |
+| `node tests/e2e/soak-circuit.mjs [--quick]` | The whole one-hour circuit by replaying the planner's jumps (about 500x real time, 2 to 2.5 minutes): one chapter-enter and one song per landscape, every flag once, autosave, the beacon and Keep Going, circuit 2, reload and Continue, plus heap, DOM, listeners and sprite cache per landscape |
+| `node tests/e2e/soak-fairness.mjs [--quick]` | Sampled flag-to-flag segments of several journey seeds and circuits: the planner clears all of them, and the page and headless Node agree exactly; careful, sloppy and clumsy bots as a fairness gauge |
+| `node tests/e2e/soak-pace.mjs` | Real time (1x) with real swipes: Mama stays on the 110 u/s line, swipe latency, landscape crossing on time, frame pacing |
+| `node tests/e2e/soak-perf.mjs [--quick]` | Frame cost per landscape and per layer, long tasks, the landscape dissolve, adaptive resolution under a 6x CPU throttle |
+| `node tests/e2e/soak-audio.mjs [--quick]` | Audio lifecycle in the integrated page: one AudioContext after the first gesture, song order and crossfades, silence when paused or hidden, mute persistence |
+
 ### Release step
 
 Before every deploy run `node tools/sync-sw.mjs`. It rewrites the file list and version fingerprint in `docs/sw.js`
