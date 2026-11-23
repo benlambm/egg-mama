@@ -31,18 +31,45 @@ export class Builder {
     this.iceMode = false;          // Frostline: every platform built while this is on is slippery
     this.joinFlagX = Infinity;     // where the next landscape's opening flag will be (acts look ahead to keep flags <= 35 s apart)   // main-route distance since the last gold / shield / magnet
     this.stats = { train: 0 };
+    this.events = 0;               // required events built so far (hops, lifts, movers, walkers, flyers, spikes): the pacing controller's books
+    this.stationLen = 0;           // total length of flag stations so far (safe ground that is not counted toward pacing)
+    this.beatLog = [];             // names of the beats built, in order (acts record their slice; the variety tests read it)
+    this.logStart = 0;             // where this landscape's beats begin in beatLog
+    this.rich = {};                // spec -> { ev, len }: how many events per length each spec has delivered so far (learned as the world is built)
   }
 
   /* ───────── undo ───────── */
   mark() {
     return { p: this.plats.length, k: this.picks.length, e: this.enemies.length, h: this.hazards.length, s: this.springs.length,
       c: this.cps.length, q: this.quiet.length, f: this.firsts.length, seen: new Set(this.seen), cur: this.cur,
-      curW: this.cur ? this.cur.w : 0, x: this.x, y: this.y, lg: this.lastGold, ls: this.lastShield, lm: this.lastMagnet, sg: this.sawGap };
+      curW: this.cur ? this.cur.w : 0, x: this.x, y: this.y, lg: this.lastGold, ls: this.lastShield, lm: this.lastMagnet, sg: this.sawGap,
+      ev: this.events, sl: this.stationLen, bl: this.beatLog.length };
   }
   rollback(m) {
     this.plats.length = m.p; this.picks.length = m.k; this.enemies.length = m.e; this.hazards.length = m.h;
     this.springs.length = m.s; this.cps.length = m.c; this.quiet.length = m.q; this.firsts.length = m.f;
     this.seen = m.seen; this.cur = m.cur; if (m.cur) m.cur.w = m.curW; this.x = m.x; this.y = m.y; this.bad = null; this.lastGold = m.lg; this.lastShield = m.ls; this.lastMagnet = m.lm; this.sawGap = m.sg;
+    this.events = m.ev; this.stationLen = m.sl; this.beatLog.length = m.bl;
+  }
+
+  /**
+   * How many REQUIRED events the geometry built since mark `m` asks of her: hops (a gap, or a wall higher than she steps
+   * onto) between static main-route platforms, a lift or mover (a jump on and a jump off), walkers, flyers, spikes.
+   * The pacing controller books these as it goes; tests/felt.mjs counts the same kind of thing from the finished level.
+   */
+  eventsSince(m) {
+    let n = this.enemies.length - m.e + this.hazards.length - m.h;
+    let prev = null;
+    for (let k = m.p - 1; k >= 0 && !prev; k--) if (!this.plats[k].o) prev = this.plats[k];
+    for (let k = m.p; k < this.plats.length; k++) {
+      const q = this.plats[k];
+      if (q.o) continue;
+      const dyn = (p) => !!p.motion && !(p.kind === 'ledge' && p.motion.amp <= 10);
+      if (dyn(q)) n += 2;
+      else if (prev && !dyn(prev)) { const gap = q.x - (prev.x + prev.w); if (gap > 0 || prev.y - q.y > T.stepUp) n++; }
+      prev = q;
+    }
+    return n;
   }
   fail(why) { if (!this.bad) this.bad = why; }
 
@@ -118,7 +145,7 @@ export class Builder {
   }
 
   /* ───────── hazards, enemies, springs ───────── */
-  walker(x0, x1, speed, phase = 0) { this.enemies.push({ id: this.enemies.length, kind: 'walker', x0: rd(x0), x1: rd(x1), y: this.y, speed: r1(speed), phase: r1(phase) }); }
+  walker(x0, x1, speed, phase = 0, y = this.y) { this.enemies.push({ id: this.enemies.length, kind: 'walker', x0: rd(x0), x1: rd(x1), y, speed: r1(speed), phase: r1(phase) }); }
   flyer(cx, cy, ax, ay, period, phase = 0) { this.enemies.push({ id: this.enemies.length, kind: 'flyer', cx: rd(cx), cy: rd(cy), ax: rd(ax), ay: rd(ay), period: r1(period), phase: r1(phase) }); }
   spikes(x, w, cycle = null) {
     const h = { id: this.hazards.length, kind: 'spikes', x: rd(x), y: this.y, w: rd(w) };
@@ -146,6 +173,7 @@ export class Builder {
     this.run(before, pat);
     this.flag();
     this.run(after, pat);
+    this.stationLen += before + after;
   }
 
   /* ───────── trains of static platforms ───────── */

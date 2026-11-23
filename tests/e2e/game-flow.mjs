@@ -282,6 +282,48 @@ async function journey(browser, server) {
   } finally { await context.close(); }
 }
 
+
+/* ───────────────────────────────── 1b. one world: crossing into the next landscape ───────────────────────────────── */
+async function crossing(browser, server) {
+  console.log('\n-- 1b. one continuous world: Meadow rolls into Clover Mill');
+  const { context, page, cdp } = await boot(browser, server, DEVICES.iphone13, { errors });
+  try {
+    await page.evaluate(() => window.__egg.adaptive().enabled = false);
+    await tapSelector(page, cdp, '[data-screen=title] [data-action=play]');
+    await waitFor(page, () => window.__egg.state().mode === 'playing');
+    const x0 = await page.evaluate(() => window.__egg.level().chapters[1].x0);
+    const flag1 = await page.evaluate(() => { const l = window.__egg.level(); return l.checkpoints[l.chapters[1].flag].x; });
+    await page.evaluate((x) => window.__egg.teleport(x - 450), x0);
+    await sleep(200);
+    let s = await st(page);
+    t.ok(s.audio.song === 'meadow' && s.chapter === 0, 'before the edge: Meadow, Meadow music');
+    await waitFor(page, () => window.__egg.state().chapter === 1, null, 12000);
+    await sleep(250);
+    s = await st(page);
+    t.ok(s.audio.song === 'clover-mill', `crossing the edge fades to the Clover Mill song (${s.audio.song}) with no menu, no pause, no load screen`);
+    t.ok(s.mode === 'playing' && s.status === 'running', 'she is still rolling');
+    const cap = await page.evaluate(() => { const c = window.__egg.renderer.fx.cap; return c.live ? c.title : ''; });
+    t.ok(/Chapter 2 · Clover Mill/.test(cap), `the chapter caption shows (${cap})`);
+    await shot(page, 'game-19-dissolve');
+    await waitFor(page, () => window.__egg.state().stored && window.__egg.state().stored.chapter === 1, null, 12000);
+    s = await st(page);
+    t.ok(s.stored.chapter === 1 && s.stored.flag === 0 && s.mama.x >= flag1 - 5, 'the first flag of the new landscape autosaves (chapter 1, flag 0)', s.stored);
+    // hysteresis: backing up across the edge must not restart the music; a real retreat does; rolling on again re-commits
+    const set = (x) => page.evaluate((v) => { const m = window.__egg.game().mama; m.x = m.px = v; m.vx = 110; }, x);
+    const song = async () => (await st(page)).audio.song;
+    await set(x0 - 120); await sleep(200);
+    t.ok(await song() === 'clover-mill', 'braking back 120 u over the edge keeps the Clover Mill song (no thrash)');
+    await set(x0 + 60); await sleep(200);
+    t.ok(await song() === 'clover-mill', '...and rolling over it again too');
+    await set(x0 - 400); await sleep(250);
+    t.ok(await song() === 'meadow', 'a real retreat (400 u back) returns to the Meadow song');
+    await set(x0 + 400); await sleep(250);
+    s = await st(page);
+    t.ok(s.audio.song === 'clover-mill' && s.audio.players <= 3, `rolling on commits Clover Mill again (players ${s.audio.players})`);
+    await page.evaluate(() => window.__egg.flushSave());
+  } finally { await context.close(); }
+}
+
 /* ───────────────────────────────── 2. legacy GitHub Pages save ───────────────────────────────── */
 async function legacy(browser, server) {
   console.log('\n-- 2. legacy save (egg-hero-journey-v1) continues');
@@ -450,6 +492,18 @@ async function hidden(browser, server) {
     t.ok(s.mode === 'paused' && Math.abs(s.mama.x - x) < 1, 'coming back leaves it paused at the same spot (the hidden time is not caught up)');
     t.ok(s.audio.running === false, 'music waits for the Resume tap');
     await settle(page);
+    // settings on the pause screen: Tap to jump reaches Input and persists; Full screen never throws
+    await tapSelector(page, cdp, '[data-screen=pause] [data-action=tap-to-jump]');
+    await sleep(150);
+    t.ok(await page.evaluate(() => window.__egg.input.tapToJump === false && JSON.parse(localStorage.getItem('egg-mama-settings-v1')).tapToJump === false), 'Tap to jump off: Input obeys it and it is stored');
+    await tapSelector(page, cdp, '[data-screen=pause] [data-action=tap-to-jump]');
+    await sleep(150);
+    t.ok(await page.evaluate(() => window.__egg.input.tapToJump === true), '...and back on');
+    if (await centerOf(page, '[data-screen=pause] [data-action=fullscreen]')) {
+      await tapSelector(page, cdp, '[data-screen=pause] [data-action=fullscreen]');
+      await sleep(400);
+      t.ok((await st(page)).mode === 'paused' && (await st(page)).errors === 0, 'the Full screen button does its best and never throws');
+    }
     await tapSelector(page, cdp, '[data-screen=pause] [data-action=resume]');
     await waitFor(page, () => window.__egg.state().mode === 'playing');
     await sleep(500);
@@ -589,6 +643,7 @@ const browser = await chromium.launch();
 let fails = 1;
 try {
   await journey(browser, server);
+  await crossing(browser, server);
   await legacy(browser, server);
   await mute(browser, server);
   await rotate(browser, server);

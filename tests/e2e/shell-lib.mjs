@@ -27,7 +27,7 @@ export const { chromium } = require('playwright');
 
 export const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const DOCS = path.join(ROOT, 'docs');
-export const SHOTS = process.env.SHELL_SHOTS || path.join(os.tmpdir(), 'egg-mama-shell');
+export const SHOTS = process.env.GAME_SHOTS || process.env.SHELL_SHOTS || path.join(os.tmpdir(), 'egg-mama-shell');
 fs.mkdirSync(SHOTS, { recursive: true });
 
 /** Devices from the task: phones held sideways (and one portrait). `toolbar` shrinks the visible height like Safari's bars do. */

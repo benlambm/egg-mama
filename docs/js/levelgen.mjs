@@ -25,6 +25,7 @@ import { CHAPTERS, difficulty } from './chapters.mjs';
 import { Builder, Y0 } from './levels/builder.mjs';
 import { assemble } from './levels/assemble.mjs';
 import { ACTS, PLAN, ROLE_OFFSET, runStages, fillTo, actIntro } from './levels/acts.mjs';
+import { RATE, ROLE_RATE, STATION_SHARE } from './levels/params.mjs';
 import { placeCues } from './levels/cues.mjs';
 
 /** The seed of circuit `circuit` of a journey. */
@@ -101,11 +102,23 @@ export function generateLevel({ circuit = 1, seed = 1 } = {}) {
     const endTarget = last ? x1 + FLAG_OFFSET - 480 - 260 - 100 : x1 - JOIN;    // where the last act stops
     B.joinFlagX = last ? endTarget + 300 : x1 + FLAG_OFFSET;
     let remaining = plan.reduce((s, id) => s + ACTS[id].w, 0);
+    // events this landscape should ask for in all, shared among its acts by role (breathers and the opening ask none)
+    const wanted = RATE(i, 0.5, circuit) * (L / T.cruise / 60);
+    let eventW = plan.reduce((s, id) => s + ACTS[id].w * (ROLE_RATE[ACTS[id].role] ?? 1), 0);
+    const ev0 = B.events;
     const landActs = [];
+    B.logStart = B.beatLog.length;                      // the variety bookkeeping of this landscape starts here
     for (const id of plan) {
       const act = ACTS[id];
       const budget = Math.max(600, ((endTarget - B.x) * act.w) / remaining);
       remaining -= act.w;
+      const share = act.w * (ROLE_RATE[act.role] ?? 1);
+      const myEvents = eventW > 0 ? Math.max(0, wanted - (B.events - ev0)) * share / eventW : 0;     // what is still owed, split by weight
+      eventW -= share;
+      // never ask for more than fits: even at the shortest rests an event takes about 400 u
+      const asked = Math.min(myEvents, ((budget * (1 - STATION_SHARE)) / 400));
+      const pace = asked > 0.5 ? { per: (budget * (1 - STATION_SHARE)) / asked, events: asked } : null;
+      const beatLog0 = B.beatLog.length, evBefore = B.events;
       const ax0 = B.x, ax1 = ax0 + budget;
       const off = ROLE_OFFSET[act.role] ?? 0;
       const dAt = (x) => Math.max(0, dBase(x) + off);
@@ -113,9 +126,11 @@ export function generateLevel({ circuit = 1, seed = 1 } = {}) {
       B.iceMode = CHAPTERS[i].ice === true && act.role !== 'recall';      // Frostline's climb is slippery from its first lesson on
       const lastAct = id === plan[plan.length - 1];
       // the last act ends before the join; every earlier act leaves it at least ~1700 u (15 s) so a closing is never a stub
-      runStages(B, c, act, ax0, ax1, dAt, lastAct, lastAct ? endTarget : endTarget - 1700);
+      runStages(B, c, act, ax0, ax1, dAt, lastAct, lastAct ? endTarget : endTarget - 1700, pace);
+      const xBeforePad = B.x;
       fillTo(B, ax1);                                  // pad out the budget with easy ground (with a flag if one is due)
-      landActs.push({ ch: i, id, role: act.role, x0: ax0, x1: B.x, d0: dAt(ax0), d1: dAt(B.x) });
+      (globalThis.__acts ||= []).push({ ch: i, id, quota: +myEvents.toFixed(1), got: B.events - evBefore, budget: Math.round(budget), used: Math.round(xBeforePad - ax0), pad: Math.round(B.x - xBeforePad) });
+      landActs.push({ ch: i, id, role: act.role, x0: ax0, x1: B.x, d0: dAt(ax0), d1: dAt(B.x), beats: B.beatLog.slice(beatLog0) });
       recent.push(id); if (recent.length > 18) recent.shift();       // ring buffer of the last ~2 landscapes' templates
     }
     acts.push(...landActs);
@@ -154,7 +169,7 @@ export function generateLevel({ circuit = 1, seed = 1 } = {}) {
     cues,
     beats,
     water: { y: 330 },
-    acts: acts.map((a) => ({ ch: a.ch, id: a.id, role: a.role, x0: Math.round(a.x0), x1: Math.round(a.x1), d0: +a.d0.toFixed(2), d1: +a.d1.toFixed(2) })),
+    acts: acts.map((a) => ({ ch: a.ch, id: a.id, role: a.role, x0: Math.round(a.x0), x1: Math.round(a.x1), d0: +a.d0.toFixed(2), d1: +a.d1.toFixed(2), beats: a.beats })),
   });
   return level;
 }

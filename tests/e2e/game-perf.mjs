@@ -75,7 +75,31 @@ try {
     t.ok(a.canvas.w === Math.round(844 * a.view.dpr) && a.canvas.h === Math.round(390 * a.view.dpr), `the canvas still equals the stage after a dpr change (${a.canvas.w}x${a.canvas.h})`);
     await sleep(700);
     await shot(page, 'perf-adaptive');
-    await page.evaluate(() => { window.__egg.adaptive().enabled = false; });
+
+    // this machine holds 60 fps at dpr 3, so make it slow on purpose: every draw burns 30 ms extra
+    console.log('  -- now with 30 ms of artificial load per frame:');
+    await page.evaluate(() => {
+      const r = window.__egg.renderer, d = r.draw;
+      window.__unload = () => { r.draw = d; };
+      r.draw = function (o) { const t0 = performance.now(); while (performance.now() - t0 < 30); return d.call(this, o); };
+      const a = window.__egg.adaptive(); a.enabled = true; a.i = 0; a.downs = 0; a.ups = 0; a.reset();
+      window.__egg.renderer.resize(844, 390, 3, window.__egg.ui.insets());
+    });
+    const slow = [];
+    for (let i = 0; i < 12; i++) {
+      await sleep(2500);
+      const s = await st(page);
+      slow.push(s.dpr);
+      console.log(`  ${String((i + 1) * 2.5).padStart(5)} s  dpr ${s.dpr}  canvas ${s.canvas.w}x${s.canvas.h}  ema ${s.adaptive.ema} ms  (downs ${s.adaptive.downs}, ups ${s.adaptive.ups})`);
+      if (s.dpr <= 1.25 && i > 4) break;
+    }
+    const sl = await st(page);
+    t.ok(sl.adaptive.downs >= 3 && sl.dpr <= 2, `under sustained load the dpr steps down notch by notch (3 -> ${slow.filter((v, i) => i === 0 || v !== slow[i - 1]).join(' -> ')})`);
+    t.ok(slow.every((v, i) => i === 0 || v <= slow[i - 1]), 'it only ever goes down while the load lasts: no oscillation');
+    t.ok(sl.canvas.w === Math.round(844 * sl.view.dpr) && sl.canvas.h === Math.round(390 * sl.view.dpr), `the canvas equals the stage at the new dpr (${sl.canvas.w}x${sl.canvas.h})`);
+    t.ok(sl.errors === 0 && sl.mode === 'playing', 'play carried on through every resolution change');
+    await shot(page, 'perf-adaptive-low');
+    await page.evaluate(() => { window.__unload(); window.__egg.adaptive().enabled = false; window.__egg.renderer.resize(844, 390, 3, window.__egg.ui.insets()); });
   }
 
   /* ── 3. soak ── */

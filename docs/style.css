@@ -207,6 +207,8 @@ html, body {
 .sw i { position: absolute; top: calc(var(--u) * 0.5); left: calc(var(--u) * 0.5); width: calc(var(--u) * 4.2); height: calc(var(--u) * 4.2); border-radius: 50%; background: #fff; box-shadow: 0 calc(var(--u) * 0.3) calc(var(--u) * 0.7) rgba(60, 36, 10, 0.45); transition: transform 0.15s ease; }
 .btn-toggle[aria-checked="true"] .sw { background: #58bd3c; }
 .btn-toggle[aria-checked="true"] .sw i { transform: translateX(calc(var(--u) * 4.2)); }
+/* the pause menu's two-column grid is narrow: "Tap to jump" overflowed into its switch on 844x390 and 915x412, so those switches give the icon's room to the label (the 640x300 rule below already does) */
+.pause-actions .btn-toggle > .ico { display: none; }
 
 /* ───────── cards ───────── */
 .card {

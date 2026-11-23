@@ -56,6 +56,24 @@ export const P = {
   springLandW: (d) => at(220, 130, d),
 };
 
+/**
+ * How many REQUIRED events per minute a landscape should ask for (raw: per minute of the whole landscape, flag stations and
+ * breathers included). This is the felt ramp: about 5 a minute at the very start of Meadow rising evenly to about 11.5 at the
+ * Summit (a hop, a lift ride, a walker, a flyer, a spike each count one). `within` is how far through the landscape; every
+ * later circuit asks a little more but still starts gentle. levelgen paces each landscape to this by rest length; the tests
+ * check the result from the built geometry (tests/felt.mjs), never from this function.
+ */
+export const RATE = (i, within = 0.5, circuit = 1) => Math.min(13.8, 5.0 + 0.523 * (i + within) + 0.9 * (circuit - 1));
+
+/** About this much of a stretch of main route is flag station (the safe ground around a flag), which pacing does not count. */
+export const STATION_SHARE = 0.27;
+
+/** How much of the landscape's events each kind of act carries, relative to the others (the gentle sawtooth inside a landscape). */
+export const ROLE_RATE = { opening: 0, recall: 0.8, teach: 0.9, vary: 1.0, combine: 1.15, setpiece: 1.2, breather: 0, closing: 0.85 };
+
+/** Longest run of back-to-back hops (a chain: 'plan the second landing'): 2 at the start, 5 at the summit. */
+export const chainMax = (d) => Math.round(clamp(2 + 3 * ease(d) / 0.62, 2, 5));
+
 /** Ordered element families and the landscape index (0-based) where each is introduced in circuit 1. */
 export const ELEMENT_INTRO = {
   gap: 0, step: 0, hill: 0, upper: 0,

@@ -83,7 +83,9 @@ let resizedAt = 0;
 let crashed = false, frameErrors = 0, consecutiveErrors = 0;
 let reduced = false;
 let titleWarm = false;                         // the current landscape's sprites are baked
+let warmPromise = Promise.resolve();
 let preloadedSlot = -1, preloadedNext = -1, preloadCheck = 0;
+let genMs = 0;                                 // how long the last generateLevel took here (reported by ?debug state())
 const levelCache = new Map();                  // 'seed:circuit' -> level (at most two: this circuit and the next)
 const actionLog = [];                          // debug: every action Input classified
 const auto = { on: false, god: false, bot: null, n: 0, respawns: 0, cp: 0, skips: 0, lastX: 0, lastT: 0 };   // debug autoplay for soak tests (never on in a normal run)
@@ -164,7 +166,9 @@ function getLevel(j) {
   const key = `${j.journeySeed}:${j.circuit}`;
   let lv = levelCache.get(key);
   if (!lv) {
+    const t0 = performance.now();
     lv = generateLevel({ circuit: j.circuit, seed: levelSeed(j.journeySeed, j.circuit) });
+    genMs = performance.now() - t0;
     levelCache.set(key, lv);
     for (const k of levelCache.keys()) { if (levelCache.size <= 2) break; if (k !== key) levelCache.delete(k); }
   }
@@ -207,7 +211,7 @@ function warmCurrent() {
   titleWarm = false;
   const cs = level.chapters, slot = game.slot;
   const i = cs && cs.length ? cs[slot].index : level.chapter | 0;
-  renderer.preload(i).then(() => { titleWarm = true; }, () => { titleWarm = true; });
+  warmPromise = renderer.preload(i).then(() => { titleWarm = true; }, () => { titleWarm = true; });
   preloadedSlot = slot;
 }
 
@@ -220,14 +224,14 @@ function startFromTitle() {
   const announce = save.flag === 0 && save.chapter > 0;      // no chapter-enter event fires at a landscape's first flag
   ui.hide(); ui.setPauseButton(true);
   input.releaseAll();
-  launch(game, { announce });
+  launch(game, { announce, waitWarm: true });
 }
 
 /**
  * Begin rolling on `g` (already adopted). Synchronous when its painting is decoded (Retry must feel instant); otherwise the
  * world is drawn idle for a moment (mode 'starting', input off) until it is.
  */
-function launch(g, { announce = false, fadeIn = false } = {}) {
+function launch(g, { announce = false, fadeIn = false, waitWarm = false } = {}) {
   const token = ++launchToken;
   const go = () => {
     if (token !== launchToken || game !== g) return;
@@ -244,8 +248,12 @@ function launch(g, { announce = false, fadeIn = false } = {}) {
     tryLockLandscape();
     checkOrientation();
   };
-  if (renderer.ready) go();
-  else { setMode('starting'); worldReadyFor(g).then(go, go); }
+  if (renderer.ready && (!waitWarm || titleWarm)) go();
+  else {
+    setMode('starting');
+    // the painting first, then (first start only) the sprites; never longer than LAUNCH_WAIT in all
+    Promise.race([worldReadyFor(g).then(() => (waitWarm ? warmPromise : null)), timeout(LAUNCH_WAIT)]).then(go, go);
+  }
 }
 
 function retry() {
@@ -847,7 +855,7 @@ function installDebug() {
     state() {
       const m = game && game.mama;
       return {
-        mode, ui: ui.current, worldReady, busy, crashed, errors: frameErrors, speed,
+        mode, ui: ui.current, worldReady, busy, crashed, errors: frameErrors, speed, genMs: +genMs.toFixed(1),
         circuit: level ? level.circuit : null, status: game ? game.status : null, t: game ? game.t : 0,
         mama: m ? { x: m.x, y: m.y, vx: m.vx, vy: m.vy, onGround: m.onGround, face: m.face, invuln: m.invuln, steerDir: m.steerDir, buffer: m.buffer } : null,
         eggs: game ? game.eggs : 0, score: game ? game.score : 0, flock: game ? game.flock : 0, shield: game ? game.shield : false,

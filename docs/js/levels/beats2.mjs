@@ -7,10 +7,10 @@
  * one at many clock offsets.
  */
 import { T, clamp } from '../tuning.mjs';
-import { P } from './params.mjs';
+import { P, chainMax } from './params.mjs';
 import { Y0 } from './builder.mjs';
 import { C, flightTime, jumpWindow, trainFeasible, MAX_RISE } from './phys.mjs';
-import { BEATS, def, gapW, landW, crW as crumbleWidth, settle } from './beats.mjs';
+import { BEATS, def, gapW, landW, crW as crumbleWidth, settle, capN } from './beats.mjs';
 
 const rd = Math.round;
 const TAU = Math.PI * 2;
@@ -28,7 +28,7 @@ function windowCentre(fromEnd, fromTop, fromKind, toPlat, toTop) {
  * it swings +-amp; the exit sits so that even from the lift's lowest point it is a rise of ~70 (inside one swipe) and
  * from its highest point it is a short drop. Returns { L, E, amp }.
  */
-export function liftUp(B, c, { exitKind = 'ground', exitW = null, gold: wantGold = false } = {}) {
+export function liftUp(B, c, { exitKind = 'ground', exitW = null, gold: wantGold = false, flat = false } = {}) {
   const { rand, d } = c;
   const A = B.cur, yA = B.y, aEnd = B.x;
   const amp = rd(clamp(P.liftAmp(d) + rand.range(-3, 3), 26, 54));
@@ -36,9 +36,9 @@ export function liftUp(B, c, { exitKind = 'ground', exitW = null, gold: wantGold
   const phase = q2(rand.range(0, TAU));
   const Lw = rd(rand.range(160, 190));
   const g1 = rd(rand.range(26, 42));
-  const Ly = yA - 30;
+  const Ly = flat ? yA - 6 : yA - 30;          // flat: a vertical ferry between two banks at the same height
   const L = B.plat('lift', aEnd + g1, Ly, Lw, { motion: { axis: 'y', amp, period, phase } });
-  const yE = Ly + amp - 70 + rd(rand.range(0, 6));
+  const yE = flat ? yA : Ly + amp - 70 + rd(rand.range(0, 6));
   const g2 = rd(rand.range(26, 40));
   const E = B.plat(exitKind, L.x + Lw + g2, yE, exitW ?? rd(rand.range(240, 320)));
   B.tag('lift', L.x - 10);
@@ -137,7 +137,7 @@ def('liftDescent', { needs: 'liftCrumble' }, (B, c) => {
 
 def('iceRun', { needs: 'ice' }, (B, c) => {
   B.tag('ice', B.x);
-  const n = c.k < 0.35 ? 2 : c.k < 0.7 ? 3 : 4;
+  const n = capN(c, Math.min(c.k < 0.35 ? 2 : c.k < 0.7 ? 3 : 4, Math.max(2, chainMax(c.d) - 2)));
   const specs = [];
   for (let i = 0; i < n; i++) specs.push({ gap: gapW(c, -2), w: rd(clamp(P.iceIsland(c.d) + rand01(c) * 30, 120, 260)), dy: 0, ice: true, gold: i === 1 && c.rand.chance(0.25) });
   specs.push({ gap: gapW(c, -2), w: landW(c), dy: 0, ice: true });

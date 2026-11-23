@@ -8,7 +8,7 @@
  * in tests by the planner bot at many difficulties and game-clock phases.
  */
 import { T, clamp } from '../tuning.mjs';
-import { P, ease } from './params.mjs';
+import { P, ease, chainMax } from './params.mjs';
 import { Y0 } from './builder.mjs';
 import { C, flightTime, jumpWindow, spikeWindow, springLanding, APEX, MAX_RISE } from './phys.mjs';
 
@@ -22,6 +22,8 @@ export const gapW = (c, extra = 0) => rd(clamp(P.gap(c.d) + extra + c.rand.range
 export const landW = (c) => rd(clamp(P.landing(c.d) + c.rand.range(-24, 24), T.minLanding + 14, 300));
 export const islW = (c) => rd(clamp(P.island(c.d) + c.rand.range(-12, 14), T.minLanding + 6, 230));
 export const ledgeW = (c) => rd(clamp(P.ledge(c.d) + c.rand.range(-10, 12), T.minLanding, 220));
+/** A chain of `n` hops, shortened when the act's event quota is nearly used (c.evLeft: set by the pacing controller). `extra` = hops beyond the n platforms (the final landing). */
+export const capN = (c, n, lo = 1, extra = 1) => (Number.isFinite(c.evLeft) ? Math.max(lo, Math.min(n, Math.round(c.evLeft) - extra)) : n);
 export const dyJit = (c, m) => rd(c.rand.range(-m, m));
 
 /**
@@ -30,7 +32,8 @@ export const dyJit = (c, m) => rd(c.rand.range(-m, m));
  * is plain, level ground so nothing misleads the approach.
  */
 export function rest(B, c, factor = 1, min = 220) {
-  const len = rd(Math.max(min, P.rest(c.d) * factor * c.rand.range(0.85, 1.2)));
+  // the pacing controller (acts.mjs) may set the length of the first rest of a spec so the landscape lands on its event rate
+  const len = c.restLen != null && factor === 1 ? rd(c.restLen) : rd(Math.max(min, P.rest(c.d) * factor * c.rand.range(0.85, 1.2)));
   const x0 = B.x;
   const plain = Math.min(len, 280);
   const free = len - plain;
@@ -120,7 +123,7 @@ def('gapPair', { needs: 'gap' }, (B, c) => {
 
 def('gapChain', { needs: 'gap' }, (B, c) => {
   B.tag('gap', B.x);
-  const n = c.k < 0.3 ? 3 : c.k < 0.7 ? 4 : 5;
+  const n = capN(c, Math.min(c.k < 0.3 ? 3 : c.k < 0.7 ? 4 : 5, Math.max(3, chainMax(c.d))), 2, 0);        // chains lengthen over the hour: 3 at first, 5 at the summit
   const specs = [];
   for (let i = 0; i < n; i++) specs.push({ gap: gapW(c, i % 2 ? 2 : -1), w: i === n - 1 ? landW(c) : islW(c), dy: i === n - 1 ? 0 : dyJit(c, 8), gold: i === 1 && c.rand.chance(0.3) });
   fixHeights(B, specs, Y0 - 24, Y0 + 12);
@@ -198,7 +201,7 @@ def('upper', { needs: 'upper', hz: false }, (B, c) => {
 
 /* ───────────────────────── walkers ───────────────────────── */
 
-function walkerEncounter(B, c, { lead = 130, tail = 170, patrolMul = 1, speedMul = 1 } = {}) {
+export function walkerEncounter(B, c, { lead = 130, tail = 170, patrolMul = 1, speedMul = 1 } = {}) {
   const patrol = rd(Math.max(96, P.walkerPatrol(c.d) * patrolMul + c.rand.range(-8, 8)));
   const speed = clamp(P.walkerSpeed(c.d) * speedMul + c.rand.range(-3, 3), 14, 52);
   const x0 = B.x;
@@ -239,7 +242,7 @@ def('walkerPair', { needs: 'walker' }, (B, c) => {
 
 /* ───────────────────────── flyers ───────────────────────── */
 
-function flyerEncounter(B, c, { high = false } = {}) {
+export function flyerEncounter(B, c, { high = false } = {}) {
   const ax = rd(P.flyerAx(c.d) + c.rand.range(-4, 6));
   const ay = rd(P.flyerAy(c.d) + c.rand.range(-2, 3));
   const lead = 130, tail = 160;
@@ -266,7 +269,7 @@ def('flyerPair', { needs: 'flyer' }, (B, c) => { flyerEncounter(B, c, { high: c.
 
 /* ───────────────────────── spikes ───────────────────────── */
 
-function spikeHop(B, c, w, cycle = null) {
+export function spikeHop(B, c, w, cycle = null) {
   const sx = B.x + 20;
   B.run(w + 40, 'none');
   const h = B.spikes(sx, w, cycle);
@@ -274,7 +277,7 @@ function spikeHop(B, c, w, cycle = null) {
   B.spikeArc(h, { n: 4 });
   return h;
 }
-const spikeW = (c) => rd(clamp(P.spikeW(c.d) + c.rand.range(-1, 1), 14, 24));   // takeoff window >= 0.28 s at any difficulty
+export const spikeW = (c) => rd(clamp(P.spikeW(c.d) + c.rand.range(-1, 1), 14, 24));   // takeoff window >= 0.28 s at any difficulty
 
 def('spike1', { needs: 'spikes' }, (B, c) => {
   B.run(30, 'none');
@@ -331,7 +334,7 @@ def('spikeGap', { needs: 'spikes' }, (B, c) => {
  * A spring on the ground path launches her to a ledge in the branches (an optional upper route with a golden egg);
  * the lower path continues underneath to land back on. Rolling onto the spring is automatic, so nothing is timed.
  */
-function springLedge(B, c, { two = false } = {}) {
+export function springLedge(B, c, { two = false, tall = false } = {}) {
   if (B.y < 274) { B.fail('springHeight'); return; }
   const lead = 220;
   B.run(lead, 'line');
@@ -340,7 +343,7 @@ function springLedge(B, c, { two = false } = {}) {
   B.spring(sx);
   B.tag('spring', sx);
   const e = ease(c.d);
-  const rise = rd(clamp(96 + 54 * e + c.rand.range(-8, 8), 92, 156));
+  const rise = tall ? rd(clamp(150 + 22 * e + c.rand.range(-6, 6), 148, 178)) : rd(clamp(96 + 54 * e + c.rand.range(-8, 8), 92, 156));
   const lx = springLanding(sx, rise);
   if (!(lx > 0)) { B.fail('spring'); return; }
   const lw = rd(clamp(180 - 68 * e + c.rand.range(-8, 8), 108, 188));
@@ -418,7 +421,7 @@ def('crumbleUpper', { needs: 'crumble', hz: false }, (B, c) => {
 /** Crumbling ledges across a pit: land, and jump on before it gives way. */
 def('crumbleChain', { needs: 'crumble' }, (B, c) => {
   B.tag('crumble', B.x);
-  const n = c.k < 0.3 ? 2 : c.k < 0.6 ? 3 : c.k < 0.85 ? 4 : 5;
+  const n = capN(c, Math.min(c.k < 0.3 ? 2 : c.k < 0.6 ? 3 : c.k < 0.85 ? 4 : 5, Math.max(2, chainMax(c.d) - 1)));
   const specs = [];
   for (let i = 0; i < n; i++) specs.push({ kind: 'crumble', gap: crG(c), w: crW(c), dy: dyJit(c, 12), gold: i === 1 && c.rand.chance(0.35) });
   specs.push({ kind: 'ground', gap: crG(c), w: landW(c) + 20, dy: 0 });
@@ -441,7 +444,7 @@ def('crumbleBridge', { needs: 'crumble' }, (B, c) => {
  */
 def('logs', { needs: 'logs' }, (B, c) => {
   B.tag('logs', B.x);
-  const n = c.k < 0.35 ? 3 : c.k < 0.7 ? 4 : 6;
+  const n = capN(c, Math.min(c.k < 0.35 ? 3 : c.k < 0.7 ? 4 : 6, Math.max(2, chainMax(c.d) - 1)));
   const specs = [];
   for (let i = 0; i < n; i++) specs.push({ kind: 'ledge', gap: gapW(c, -10), w: ledgeW(c), dy: dyJit(c, 16), gold: i === 2 && c.rand.chance(0.25) });
   specs.push({ kind: 'ground', gap: gapW(c, -7), w: landW(c), dy: 0 });
@@ -459,7 +462,7 @@ def('logs', { needs: 'logs' }, (B, c) => {
 /** Broken spans: a deck of big and small pieces; the small ones need a second landing planned. */
 def('bridge', { needs: 'bridge' }, (B, c) => {
   B.tag('bridge', B.x);
-  const n = c.k < 0.35 ? 3 : c.k < 0.7 ? 4 : 5;
+  const n = capN(c, Math.min(c.k < 0.35 ? 3 : c.k < 0.7 ? 4 : 5, Math.max(2, chainMax(c.d) - 1)));
   const specs = [];
   let big = true;
   for (let i = 0; i < n; i++) {
