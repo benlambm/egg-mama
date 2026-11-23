@@ -151,6 +151,7 @@ def('logsLane', { needs: 'logs' }, (B, c) => {
   const specs = [];
   for (let i = 0; i < n; i++) specs.push({ kind: 'ledge', gap: gapW(c, -10), w: ledgeW(c) + 14, dy: 0 });
   specs.push({ kind: 'ground', gap: gapW(c, -7), w: landW(c), dy: 0 });
+  const k0 = B.picks.length;
   const res = B.train(specs, logOpts(c));
   if (B.bad) return;
   bob(B, c, res);
@@ -159,6 +160,7 @@ def('logsLane', { needs: 'logs' }, (B, c) => {
     if (i % 2 !== 0 && i !== top.length - 1) return;
     const h = rd(c.rand.range(70, 80));
     const U = B.plat('ledge', L.x + 8, L.y - h, Math.min(L.w - 4, 110), { opt: true });
+    B.clearEggs(k0, U.x - 6, U.x + U.w + 6, U.y - 14, U.y + U.h + 14);          // the arcs of the low lane pass through this height
     B.egg(U.x + U.w * 0.3, U.y - 26);
     if (i === top.length - 1 || i === 2) gold(B, U.x + U.w * 0.7, U.y - 30); else B.egg(U.x + U.w * 0.7, U.y - 26);
   });
@@ -360,7 +362,7 @@ def('iceSteps', { needs: 'ice' }, (B, c) => {
 /* ───────────────────────── Moonridge ───────────────────────── */
 
 /** One ferry across a chasm: bank A, a mover that swings in x, bank B (optionally higher). */
-function ferry(B, c, { bankW = null, rise = 0 } = {}) {
+export function ferry(B, c, { bankW = null, rise = 0 } = {}) {
   const { rand, d } = c;
   const amp = rd(clamp(P.moverAmp(d) + rand.range(-2, 2), 12, 29));
   const period = q2(P.moverPeriod(d) + rand.range(-0.3, 0.4));

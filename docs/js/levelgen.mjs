@@ -60,7 +60,7 @@ function planFor(i, circuit, rand, recent) {
   return plan;
 }
 
-export function generateLevel({ circuit = 1, seed = 1 } = {}) {
+export function generateLevel({ circuit = 1, seed = 1, trace = null } = {}) {
   seed >>>= 0;
   const B = new Builder(rng(mixSeed(seed, 0xB011D)), { circuit });
   const acts = [];
@@ -129,8 +129,8 @@ export function generateLevel({ circuit = 1, seed = 1 } = {}) {
       runStages(B, c, act, ax0, ax1, dAt, lastAct, lastAct ? endTarget : endTarget - 1700, pace);
       const xBeforePad = B.x;
       fillTo(B, ax1);                                  // pad out the budget with easy ground (with a flag if one is due)
-      (globalThis.__acts ||= []).push({ ch: i, id, quota: +myEvents.toFixed(1), got: B.events - evBefore, budget: Math.round(budget), used: Math.round(xBeforePad - ax0), pad: Math.round(B.x - xBeforePad) });
-      landActs.push({ ch: i, id, role: act.role, x0: ax0, x1: B.x, d0: dAt(ax0), d1: dAt(B.x), beats: B.beatLog.slice(beatLog0) });
+      if (trace) trace.push({ ch: i, id, quota: +myEvents.toFixed(1), got: B.events - evBefore, budget: Math.round(budget), used: Math.round(xBeforePad - ax0), pad: Math.round(B.x - xBeforePad) });
+      landActs.push({ ch: i, id, role: act.role, x0: ax0, x1: B.x, d0: dAt(ax0), d1: dAt(B.x), beats: B.beatLog.slice(beatLog0), beatX: B.beatX.slice(beatLog0) });
       recent.push(id); if (recent.length > 18) recent.shift();       // ring buffer of the last ~2 landscapes' templates
     }
     acts.push(...landActs);
@@ -169,7 +169,7 @@ export function generateLevel({ circuit = 1, seed = 1 } = {}) {
     cues,
     beats,
     water: { y: 330 },
-    acts: acts.map((a) => ({ ch: a.ch, id: a.id, role: a.role, x0: Math.round(a.x0), x1: Math.round(a.x1), d0: +a.d0.toFixed(2), d1: +a.d1.toFixed(2), beats: a.beats })),
+    acts: acts.map((a) => ({ ch: a.ch, id: a.id, role: a.role, x0: Math.round(a.x0), x1: Math.round(a.x1), d0: +a.d0.toFixed(2), d1: +a.d1.toFixed(2), beats: a.beats, beatX: a.beatX })),
   });
   return level;
 }

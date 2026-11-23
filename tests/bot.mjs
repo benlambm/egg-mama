@@ -338,3 +338,69 @@ export function playWorld(level, opts = {}) {
   }
   return out;
 }
+
+/* ───────────────────────── a button-mashing toddler ───────────────────────── */
+
+/**
+ * The youngest player: no plan at all. She jumps the instant Mama lands (most of the time), adds random extra jumps
+ * (`rate` per second) and now and then a random push or brake swipe (`steerRate` per second). One flag-to-flag segment.
+ * Options: startCheckpoint, stopAtCheckpoint (default start + 1), seed, tOffset, flock (default 0: a hit ends the run),
+ * rate (2.2), steerRate (0.25), reland (0.8: chance of jumping again at once on landing), maxSeconds.
+ * Returns { ok, reason, x, hits, falls, t }.
+ */
+export function playMash(level, opts = {}) {
+  const o = { startCheckpoint: 0, stopAtCheckpoint: null, seed: 1, tOffset: 0, flock: 0, rate: 2.2, steerRate: 0.25, reland: 0.8, maxSeconds: 70, ...opts };
+  const cps = level.checkpoints;
+  const stopCp = o.stopAtCheckpoint ?? o.startCheckpoint + 1;
+  const x0 = cps[o.startCheckpoint].x, stopX = cps[stopCp] ? cps[stopCp].x : (level.beacon ? level.beacon.x : level.endX);
+  const sub = windowLevel(level, x0 - 400, stopX + 900);
+  const game = createGame(sub, { eggs: 0, score: 0, flock: o.flock }, { checkpoint: o.startCheckpoint });
+  game.t = o.tOffset;
+  startRun(game);
+  const rand = rng((o.seed >>> 0) || 1);
+  const maxSteps = Math.round(o.maxSeconds / DT);
+  let wasGround = game.mama.onGround, lastAct = -1e9, reason = 'timeout';
+  for (let si = 0; si < maxSteps; si++) {
+    const m = game.mama;
+    const can = si - lastAct >= MIN_GAP_STEPS;
+    if (can) {
+      if (m.onGround && !wasGround && rand() < o.reland) { act(game, 'jump'); lastAct = si; }
+      else if (rand() < o.rate * DT) { act(game, 'jump'); lastAct = si; }
+      else if (rand() < o.steerRate * DT) { act(game, rand() < 0.5 ? 'push' : 'brake'); lastAct = si; }
+    }
+    wasGround = m.onGround;
+    step(game, NOHELD);
+    if (game.events.length) game.events.length = 0;
+    if (game.status !== 'running') { reason = game.status === 'dead' ? 'dead' : game.status; break; }
+    if (game.checkpoint >= stopCp) { reason = 'checkpoint'; break; }
+  }
+  const s = game.stats;
+  return { ok: reason === 'checkpoint' || reason === 'beacon' || reason === 'exit', reason, x: game.mama.x, hits: s.hits, falls: s.falls, t: game.t - o.tOffset };
+}
+
+/**
+ * Per-landscape clear rates of a whole level for a kind of imperfect player, segment by segment.
+ *   kind 'mash'    the toddler above, `trials` seeds per segment
+ *   kind 'sloppy'  the planner bot with 80 ms of UNCOMPENSATED latency and +-80 ms of jitter (a calm but clumsy player)
+ * Returns { rates: [13 fractions], runs: [13 counts], overall }. A segment counts as cleared when she reaches the next flag
+ * with no flock to absorb a hit (every hit would end the attempt).
+ */
+export function clearRates(level, { kind = 'mash', trials = 3, stride = 1, seed = 1, opts = {} } = {}) {
+  const segs = segmentsOf(level);
+  const n = level.chapters.length;
+  const ok = new Array(n).fill(0), runs = new Array(n).fill(0);
+  for (let i = 0; i < segs.length; i += stride) {
+    const s = segs[i];
+    if (s.to === null) continue;                                   // the final stretch to the beacon is plain ground
+    for (let k = 0; k < trials; k++) {
+      const sd = mixSeedLite(seed, i, k);
+      const r = kind === 'mash'
+        ? playMash(level, { startCheckpoint: s.from, stopAtCheckpoint: s.to, seed: sd, tOffset: (sd % 977) / 97, ...opts })
+        : playLevel(level, { startCheckpoint: s.from, stopAtCheckpoint: s.to, allowSteer: false, tOffset: (sd % 977) / 97, noise: { latency: 0.08, jitter: 0.08, compensate: false, seed: sd }, ...opts });
+      runs[s.ch]++; if (r.ok) ok[s.ch]++;
+    }
+  }
+  const rates = ok.map((v, i) => (runs[i] ? v / runs[i] : NaN));
+  return { rates, runs, ok, overall: ok.reduce((a, b) => a + b, 0) / Math.max(1, runs.reduce((a, b) => a + b, 0)) };
+}
+const mixSeedLite = (a, b, c) => (Math.imul(a ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul(b + 0x7f4a7c15, 0xc2b2ae35) ^ Math.imul(c + 0x165667b1, 0x27d4eb2f)) >>> 0;

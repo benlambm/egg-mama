@@ -61,7 +61,7 @@ so phones that already installed the game pick up the new files (and so offline 
 ```
 docs/                 the whole deployed site (GitHub Pages serves this folder)
   index.html style.css manifest.webmanifest sw.js icons/ assets/*.webp (the 13 paintings)
-  js/main.mjs         main loop and screen flow
+  js/main.mjs         main loop and screen flow (js/loop.mjs: fixed timestep, adaptive resolution, save throttle)
   js/sim.mjs          deterministic fixed-step simulation (1/120 s), no browser APIs
   js/levelgen.mjs     seeded generator for the whole circuit (+ js/levels/*)
   js/tuning.mjs       every gameplay number in one place

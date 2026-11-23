@@ -2,7 +2,7 @@
 /*
  * Egg Mama — what the whole loop costs, and whether a long session stays healthy (run by hand; NOT part of `node --test`).
  *
- *   node tests/e2e/game-perf.mjs [--soak <seconds of wall time, default 150>] [--quick]
+ *   node tests/e2e/game-perf.mjs [--soak <seconds of wall time, default 150>] [--quick] [--sections 1,2,3,4]
  *   GAME_SHOTS=<dir> for screenshots (default <tmp>/egg-mama-shell, never the repo)
  *
  * Real Chromium with the SOFTWARE rasteriser (no GPU), iPhone 13 landscape 844x390 @3 (a 2532x1170 canvas):
@@ -10,6 +10,7 @@
  *      (dark): JS time per frame and rAF-to-rAF time, p50 / p95; plus `bench`, which adds a 1-px read-back so the rasteriser's
  *      own work is included;
  *   2. the dpr safety net on this slow machine: starts at 3, watch it step down, hold, and not oscillate;
+ *   4. the heap bound: two drawn laps over all 13 landscapes; the second must not grow it;
  *   3. a soak: autoplay (god mode + the edge autopilot, drawn, with audio) at 8x speed across landscapes while sampling the JS heap
  *      after a forced GC, the audio voice / player counts and the error count. A healthy loop's heap is flat after warm-up.
  * Numbers are for THIS machine (software raster, shared 4 cores): a phone's GPU will not run the same way, but the shape (what is
@@ -20,6 +21,8 @@ import { chromium, startServer, reporter, boot, tapSelector, shot, DEVICES } fro
 const arg = (n, d) => { const i = process.argv.indexOf('--' + n); return i < 0 ? d : (process.argv[i + 1] && !process.argv[i + 1].startsWith('--') ? process.argv[i + 1] : true); };
 const SOAK = Number(arg('soak', 150));
 const QUICK = !!arg('quick', false);
+const SECTIONS = String(arg('sections', '1,2,3,4')).split(',');            // e.g. --sections 4 runs only the heap-bound lap
+const on = (n) => SECTIONS.includes(String(n));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const st = (page) => page.evaluate(() => window.__egg.state());
 const t = reporter('game perf and soak (software rasteriser, 844x390 @3)');
@@ -39,7 +42,7 @@ try {
   console.log('\n-- 1. frame cost, whole loop');
   const spots = [['Meadow', 0, 5200], ['Fogwood (misty)', 5, 3200], ['Lantern Caverns (dark)', 8, 3200]];
   const costs = {};
-  for (const [name, idx, off] of spots) {
+  for (const [name, idx, off] of on(1) ? spots : []) {
     await page.evaluate(([i, o]) => { const l = window.__egg.level(); window.__egg.teleport(l.chapters[i].x0 + o); }, [idx, off]);
     await sleep(2500);                                                        // sprites bake, painting decodes, ease-in is over
     await page.evaluate(() => window.__egg.resetPerf());
@@ -56,7 +59,7 @@ try {
   }
 
   /* ── 2. the dpr safety net ── */
-  if (!QUICK) {
+  if (!QUICK && on(2)) {
     console.log('\n-- 2. resolution safety net on this (slow) machine');
     await page.evaluate(() => window.__egg.teleport(window.__egg.level().chapters[0].x0 + 5200));
     await page.evaluate(() => { const a = window.__egg.adaptive(); a.enabled = true; a.reset(); });
@@ -103,6 +106,7 @@ try {
   }
 
   /* ── 3. soak ── */
+  if (on(3)) {
   console.log(`\n-- 3. soak: ${SOAK} s of wall time, 8x speed, autoplay (god + edge autopilot), drawn, with audio`);
   await page.evaluate(() => { window.__egg.teleport(window.__egg.level().checkpoints[1].x); window.__egg.setSpeed(8); });
   await page.evaluate(() => window.__egg.gc());
@@ -133,6 +137,31 @@ try {
   t.ok(rows.every((r) => r.decoded <= 4), 'at most a few decoded paintings are ever held');
   t.ok(last.heapMB - first.heapMB < 12, `the JS heap is flat after warm-up (${first.heapMB} -> ${last.heapMB} MB)`);
   t.ok(last.chapter > 1 || last.circuit > 1 || SOAK < 60, `the loop carried on through landscape changes (reached landscape ${last.chapter}, circuit ${last.circuit})`);
+  }
+
+  /* ── 4. is the heap bounded? two passes over all 13 landscapes (drawn): the second pass must not grow ── */
+  if (!QUICK && on(4)) {
+    console.log('\n-- 4. heap bound: every landscape twice (autoplay stays on, god mode, real draw + audio)');
+    await page.evaluate(() => { window.__egg.setSpeed(1); window.__egg.auto.god = true; });
+    const heapAt = async () => { await page.evaluate(() => window.__egg.gc()); return +((await page.evaluate(() => window.__egg.heap())) / 1048576).toFixed(1); };
+    const pass = [];
+    for (let p = 0; p < 2; p++) {
+      const row = [];
+      for (let i = 0; i < 13; i++) {
+        await page.evaluate((i) => { const l = window.__egg.level(); window.__egg.teleport(l.chapters[i].x0 + 2600); }, i);
+        await sleep(1800);
+        row.push(await heapAt());
+      }
+      pass.push(row);
+      console.log(`  pass ${p + 1}: ${row.join(' ')} MB`);
+    }
+    const end1 = pass[0][12], end2 = pass[1][12];
+    t.ok(end2 - end1 < 4, `the second lap over all 13 landscapes adds little (${end1} -> ${end2} MB): caches are bounded, nothing leaks per visit`);
+    t.ok(Math.max(...pass[1]) < 40, `the heap stays far below any phone's limit (peak ${Math.max(...pass[1])} MB)`);
+    const fin = await st(page);
+    t.ok(fin.errors === 0 && fin.audio.players <= 3 && fin.audio.voices <= 150, 'no errors; audio players and voices bounded through all 26 landscape visits');
+  }
+
   const errs = errors.filter((e) => !/favicon/.test(e));
   t.ok(errs.length === 0, 'no console / page errors', errs.slice(0, 5));
   await context.close();

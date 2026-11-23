@@ -2,7 +2,8 @@
 /*
  * Egg Mama — the whole game, end to end, in a real Chromium (run by hand; NOT part of `node --test`).
  *
- *   node tests/e2e/game-flow.mjs [--quick]       exit code 0 = everything passed
+ *   node tests/e2e/game-flow.mjs [--quick] [--only journey,crossing,fast,legacy,mute,rotate,hidden,noScroll,crash,wake,normal,phones]
+ *                                                exit code 0 = everything passed
  *   GAME_SHOTS=<dir> to choose where screenshots go (default: <tmp>/egg-mama-shell; never the repo)
  *
  * Real main.mjs, real sim / levelgen / renderer / audio / ui / input, served from docs/ with python3 -m http.server.
@@ -22,10 +23,12 @@
 import path from 'node:path';
 import {
   chromium, startServer, reporter, boot, settle, shot, swipe, multiSwipe, tap, tapSelector, centerOf, gameState, scrollState, scrollIsZero,
-  DEVICES, SHOTS, seedSave,
+  DEVICES, SHOTS, seedSave, contextOptions,
 } from './shell-lib.mjs';
 
 const QUICK = process.argv.includes('--quick');
+const ONLY = (() => { const i = process.argv.indexOf('--only'); return i < 0 ? null : String(process.argv[i + 1] || '').split(','); })();
+const want = (name) => !ONLY || ONLY.includes(name);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const st = (page) => gameState(page);
 const waitFor = (page, fn, arg, timeout = 15000) => page.waitForFunction(fn, arg, { timeout, polling: 50 });
@@ -126,7 +129,8 @@ async function journey(browser, server) {
     const gap = await page.evaluate(() => {
       const g = window.__egg.game(), P = g.platforms.filter((p) => p.kind === 'ground');
       const m = g.mama;
-      for (let i = 0; i + 1 < P.length; i++) if (P[i].x + P[i].w > m.x + 300 && P[i + 1].x - (P[i].x + P[i].w) > 20) return { edge: P[i].x + P[i].w, cp: g.level.checkpoints[g.checkpoint].x };
+      // a real pit: the island beyond it is not lower (a step DOWN is a drop onto the next island, not a fall)
+      for (let i = 0; i + 1 < P.length; i++) if (P[i].x + P[i].w > m.x + 300 && P[i + 1].x - (P[i].x + P[i].w) > 20 && P[i + 1].y <= P[i].y) return { edge: P[i].x + P[i].w, cp: g.level.checkpoints[g.checkpoint].x };
       return null;
     });
     t.ok(!!gap, 'there is a gap ahead to fall into', gap);
@@ -324,6 +328,29 @@ async function crossing(browser, server) {
   } finally { await context.close(); }
 }
 
+/* ───────────────────────────────── 1c. fastForward: the soak hook uses the same event handling ───────────────────────────────── */
+async function fastForward(browser, server) {
+  console.log('\n-- 1c. fastForward (no drawing) crosses landscapes with the real save / song handling');
+  const { context, page, cdp } = await boot(browser, server, DEVICES.iphone13, { errors });
+  try {
+    await page.evaluate(() => window.__egg.adaptive().enabled = false);
+    await tapSelector(page, cdp, '[data-screen=title] [data-action=play]');
+    await waitFor(page, () => window.__egg.state().mode === 'playing');
+    const t0 = Date.now();
+    const r = await page.evaluate(() => window.__egg.fastForward(800, { god: true, bot: 'edge' }));
+    const ms = Date.now() - t0;
+    const mid = await st(page);
+    await sleep(1800);                                                      // the save throttle (one storage write per 1.5 s) catches up
+    const s = await st(page);
+    t.ok(mid.save.chapter === s.stored.chapter && mid.save.flag === s.stored.flag, `dozens of saves in one second collapsed into the newest write (stored ${s.stored.chapter}:${s.stored.flag})`, { mid: mid.save, stored: s.stored });
+    t.ok(r.steps > 90000 && r.x1 > r.x0 + 40000, `800 s of play stepped in ${ms} ms wall (x ${Math.round(r.x0)} -> ${Math.round(r.x1)}, ${r.steps} steps)`, r);
+    t.ok(s.chapter >= 2 && s.mode === 'playing', `she crossed ${s.chapter} landscapes and the loop is still playing (landscape ${s.chapter + 1})`);
+    t.ok((r.events.checkpoint || 0) >= 10 && s.stored && s.stored.chapter >= 2 && s.stored.playSeconds > 500, `checkpoint saves happened along the way (${r.events.checkpoint} flags, stored chapter ${s.stored && s.stored.chapter}, ${s.stored && Math.round(s.stored.playSeconds)} s played)`, s.stored);
+    t.ok(s.audio.song !== 'meadow' && s.audio.song !== null, `chapter songs followed (${s.audio.song})`);
+    t.ok(s.errors === 0, 'no errors');
+  } finally { await context.close(); }
+}
+
 /* ───────────────────────────────── 2. legacy GitHub Pages save ───────────────────────────────── */
 async function legacy(browser, server) {
   console.log('\n-- 2. legacy save (egg-hero-journey-v1) continues');
@@ -444,6 +471,24 @@ async function rotate(browser, server) {
     await page.setViewportSize({ width: 844, height: 390 });
     await waitFor(page, () => window.__egg.state().mode === 'finish' && window.__egg.state().ui === 'finish', null, 5000);
     t.ok(true, 'rotating during the finish screen puts the finish screen back');
+
+    // ...and a phone turned upright DURING the fade to the Main Title: it must still get the prompt once the fade is over
+    await page.evaluate(() => window.__egg.ui.hide());
+    await page.reload();
+    await page.waitForFunction(() => window.__egg && window.__egg.state().worldReady, null, { timeout: 30000 });
+    await settle(page);
+    await tapSelector(page, cdp, '[data-screen=title] [data-action=continue]');
+    await waitFor(page, () => window.__egg.state().mode === 'playing');
+    await sleep(400);
+    await tapSelector(page, cdp, '#pause-btn');
+    await waitFor(page, () => window.__egg.state().ui === 'pause'); await settle(page);
+    await tapSelector(page, cdp, '[data-screen=pause] [data-action=title]');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await waitFor(page, () => window.__egg.state().mode === 'rotate', null, 6000);
+    t.ok(true, 'turned upright while fading to the Main Title: the rotate prompt still appears afterwards');
+    await page.setViewportSize({ width: 844, height: 390 });
+    await waitFor(page, () => window.__egg.state().mode === 'title' && window.__egg.state().ui === 'title', null, 5000);
+    t.ok(true, '...and turning back brings the title');
 
     // ...and a phone that STARTS upright
     await page.setViewportSize({ width: 390, height: 844 });
@@ -593,6 +638,66 @@ async function crash(browser, server) {
   } finally { await context.close(); }
 }
 
+/* ───────────────────────────────── 7b. the screen stays awake while she rolls ───────────────────────────────── */
+async function wakeLock(browser, server) {
+  console.log('\n-- 7b. screen wake lock (a stand-in navigator.wakeLock counts requests and releases)');
+  const init = `window.__wl = { req: 0, rel: 0, live: 0 };
+    Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: { request: async () => {
+      __wl.req++; __wl.live++; const w = new EventTarget(); let on = true;
+      w.release = async () => { if (on) { on = false; __wl.rel++; __wl.live--; w.dispatchEvent(new Event('release')); } };
+      return w; } } });`;
+  const { context, page, cdp } = await boot(browser, server, DEVICES.iphone13, { init, errors });
+  try {
+    await page.evaluate(() => window.__egg.adaptive().enabled = false);
+    const wl = () => page.evaluate(() => ({ ...window.__wl, wake: window.__egg.state().wake }));
+    let s = await wl();
+    t.ok(s.req === 0, 'the title does not hold the screen awake');
+    await tapSelector(page, cdp, '[data-screen=title] [data-action=play]');
+    await waitFor(page, () => window.__egg.state().mode === 'playing');
+    await sleep(300);
+    s = await wl();
+    t.ok(s.req === 1 && s.live === 1 && s.wake === true, 'playing: one wake lock is held', s);
+    await tapSelector(page, cdp, '#pause-btn');
+    await waitFor(page, () => window.__egg.state().mode === 'paused');
+    await sleep(200);
+    s = await wl();
+    t.ok(s.live === 0 && s.wake === false, 'pausing releases it', s);
+    await tapSelector(page, cdp, '[data-screen=pause] [data-action=resume]');
+    await waitFor(page, () => window.__egg.state().mode === 'playing');
+    await sleep(300);
+    s = await wl();
+    t.ok(s.live === 1 && s.req === 2, 'resuming takes one again (never more than one at a time)', s);
+    await page.evaluate(() => window.__egg.forceDead());
+    await waitFor(page, () => window.__egg.state().ui === 'dead', null, 8000);
+    await sleep(200);
+    s = await wl();
+    t.ok(s.live === 0, 'the dead screen lets the screen sleep again', s);
+  } finally { await context.close(); }
+}
+
+/* ───────────────────────────────── 8. a normal load (no ?debug) ───────────────────────────────── */
+async function normal(browser, server) {
+  console.log('\n-- 8. a normal load: no debug hooks, no console noise, offline-capable shell');
+  const context = await browser.newContext(contextOptions(DEVICES.iphone13));
+  const page = await context.newPage();
+  const errs = [];
+  page.on('pageerror', (e) => errs.push(`pageerror: ${e.message}`));
+  page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') errs.push(`console.${m.type()}: ${m.text()}`); });
+  try {
+    await page.goto(server.url);
+    await page.waitForSelector('[data-screen=title] [data-action=play]', { state: 'visible', timeout: 15000 });
+    await sleep(2500);                                                     // the world is generated and painted by now
+    const hooks = await page.evaluate(() => ({ egg: typeof window.__egg, shell: typeof window.__shell, vib: typeof navigator.vibrate }));
+    t.ok(hooks.egg === 'undefined' && hooks.shell === 'undefined', 'without ?debug there are no test hooks on window', hooks);
+    const cdp = await context.newCDPSession(page);
+    await tapSelector(page, cdp, '[data-screen=title] [data-action=play]');
+    await sleep(1500);
+    t.ok(await page.evaluate(() => !document.getElementById('pause-btn').hidden), 'the pause button is up: she is playing');
+    await shot(page, 'game-20-normal-load');
+    t.ok(errs.length === 0, 'no console errors or warnings in a normal load', errs.slice(0, 5));
+  } finally { await context.close(); }
+}
+
 /* ───────────────────────────────── 9. other phones ───────────────────────────────── */
 async function otherPhones(browser, server) {
   for (const key of ['pixel7', 'small']) {
@@ -642,15 +747,18 @@ const server = await startServer();
 const browser = await chromium.launch();
 let fails = 1;
 try {
-  await journey(browser, server);
-  await crossing(browser, server);
-  await legacy(browser, server);
-  await mute(browser, server);
-  await rotate(browser, server);
-  await hidden(browser, server);
-  await noScroll(browser, server);
-  await crash(browser, server);
-  if (!QUICK) await otherPhones(browser, server);
+  if (want('journey')) await journey(browser, server);
+  if (want('crossing')) await crossing(browser, server);
+  if (want('fast')) await fastForward(browser, server);
+  if (want('legacy')) await legacy(browser, server);
+  if (want('mute')) await mute(browser, server);
+  if (want('rotate')) await rotate(browser, server);
+  if (want('hidden')) await hidden(browser, server);
+  if (want('noScroll')) await noScroll(browser, server);
+  if (want('crash')) await crash(browser, server);
+  if (want('wake')) await wakeLock(browser, server);
+  if (want('normal')) await normal(browser, server);
+  if (!QUICK && want('phones')) await otherPhones(browser, server);
   const bad = errors.filter((e) => !/favicon/.test(e));
   t.ok(bad.length === 0, 'no console errors and no page errors anywhere in a normal run', bad.slice(0, 8));
   fails = t.done();

@@ -376,7 +376,8 @@ for (const circuit of CIRCUITS) {
       assert.ok(h.x - run.x0 >= 120, `spikes at ${h.x}: >= 120 u approach (${(h.x - run.x0).toFixed(0)})`);
       assert.ok(run.x1 - (h.x + h.w) >= 100, `spikes at ${h.x}: room beyond to land (${(run.x1 - h.x - h.w).toFixed(0)})`);
       if (h.cycle) assert.ok(h.cycle.up < h.cycle.period && h.cycle.period >= 2 && h.cycle.up >= 0.8);
-      assert.equal(h.y, run.y, 'spike height = ground top');
+      const under = lv.platforms.find((p) => !p.o && p.kind === 'ground' && !p.motion && h.x >= p.x && h.x + h.w <= p.x + p.w);
+      assert.ok(under && under.y === h.y, 'spike height = the ground top under it');
     }
     // a hazard never sits within a flag's safe zone (e3) and not on a moving / crumbling platform
     for (const h of lv.hazards) assert.ok(lv.platforms.some((p) => p.kind === 'ground' && !p.motion && h.x >= p.x && h.x + h.w <= p.x + p.w && p.y === h.y));
@@ -997,7 +998,7 @@ test('the sim lets her walk across gaps of up to ~38 u between ground islands, s
   const crossed = (gap) => { const g = createGame(mk(gap), { flock: 0 }); startRun(g); for (let i = 0; i < 120 * 8; i++) step(g, {}); return g.stats.falls === 0 && g.mama.x > 1000 + gap; };
   assert.equal(crossed(30), true, 'a 30 u gap is walked across');
   assert.equal(crossed(46), false, 'a 46 u gap needs a jump');
-  assert.ok(levelOf(1).platforms.every((p, i, a) => !a[i + 1] || p.o || a[i + 1].o || a[i + 1].x - p.x - p.w < 1 || a[i + 1].x - p.x - p.w >= 22), 'no gap narrower than 22 u anywhere');
+  assert.ok(levelOf(1).platforms.every((p, i, a) => !a[i + 1] || p.o || a[i + 1].o || p.motion || a[i + 1].motion || a[i + 1].x - p.x - p.w < 1 || a[i + 1].x - p.x - p.w >= 22), 'no gap narrower than 22 u between static platforms (lifts and movers have their own entry/exit rules, see e2)');
 });
 
 test('snapshotCarry / restore keeps flock and eggs across a flag restart', () => {

@@ -11,6 +11,7 @@
  *                (after T.deadSeconds) -> dead screen; beacon (after FINISH_DELAY) -> finish screen.
  *   paused / rotate / hidden: no sim steps and no audio (audio.suspend()); the world stays drawn, frozen. Time spent away is
  *                never caught up (resetClock) and Resume eases Mama back in (easeIn).
+ *   wake lock:   while playing the screen is kept awake (she rolls on her own, a child may not touch the phone for a while); best effort.
  *   title:       the live world at the saved flag, Mama idle with her flock; the sim steps (status 'ready') so lifts and
  *                walkers move, but she does not.
  * The world is ONE level per circuit (generateLevel, a few ms to a few hundred on a phone): it is generated after the first
@@ -134,6 +135,30 @@ function setMode(m) {
   mode = m;
   stage.dataset.mode = m;
   syncAudio();
+  keepAwake(m === 'playing');
+}
+
+/**
+ * Keep the screen awake while she rolls: she moves on her own, so a child can go a good while without touching the phone and
+ * an hour-long journey must not be interrupted by the screen dimming. Released the moment play stops (pause, menus, hidden).
+ * Best effort: browsers without the Screen Wake Lock API, or that refuse it, simply do not get it.
+ */
+let wake = null, wakePending = false;
+function keepAwake(on) {
+  try {
+    if (!on) {
+      if (wake) { const w = wake; wake = null; Promise.resolve(w.release()).catch(noop); }
+      return;
+    }
+    if (wake || wakePending || document.hidden || !navigator.wakeLock || !navigator.wakeLock.request) return;
+    wakePending = true;
+    navigator.wakeLock.request('screen').then((w) => {
+      wakePending = false;
+      if (mode !== 'playing' || document.hidden) { Promise.resolve(w.release()).catch(noop); return; }   // play stopped while we asked
+      wake = w;
+      w.addEventListener('release', () => { if (wake === w) wake = null; });                            // the browser takes it back when the tab is hidden
+    }, () => { wakePending = false; });
+  } catch { wakePending = false; }
 }
 /** The audio engine runs only while the game is somewhere that makes sound (title, playing, dead, finish) and visible. */
 function syncAudio() {
@@ -252,7 +277,9 @@ function launch(g, { announce = false, fadeIn = false, waitWarm = false } = {}) 
   else {
     setMode('starting');
     // the painting first, then (first start only) the sprites; never longer than LAUNCH_WAIT in all
-    Promise.race([worldReadyFor(g).then(() => (waitWarm ? warmPromise : null)), timeout(LAUNCH_WAIT)]).then(go, go);
+    Promise.race([worldReadyFor(g).then(() => (waitWarm ? warmPromise : null)), timeout(LAUNCH_WAIT)])
+      .then(go, go)
+      .catch((e) => { logError('launch', e); showCrash(); });
   }
 }
 
@@ -355,7 +382,10 @@ async function startOver() {
     fadeTo(0, FADE_IN);
   } catch (e) { logError('start over', e); fade.v = 0; fade.to = 0; } finally { busy = false; flushPending(); }
 }
-function flushPending() { if (pendingStart && !busy && worldReady && mode === 'title') { pendingStart = false; startFromTitle(); } }
+function flushPending() {
+  checkOrientation();                         // an upright phone during a fade was ignored (see checkOrientation): ask again now
+  if (pendingStart && !busy && worldReady && mode === 'title') { pendingStart = false; startFromTitle(); }
+}
 
 /** Canvas fade controller: tick() moves fade.v toward fade.to; the promise resolves when it gets there. */
 function fadeTo(to, seconds) {
@@ -427,6 +457,7 @@ function onHide() {
 }
 function onShow() {
   syncAudio();
+  keepAwake(mode === 'playing');
   lastNow = 0; stepper.reset(); adaptive.reset();
   needResize = true;
 }
@@ -611,8 +642,8 @@ function tick(now) {
     if (ev.length) processEvents(ev);
     if (auto.on && mode === 'playing') autoPost(ev);
     if (mode === 'playing') {
-      playSeconds += Math.min(dt, 0.25);
       const st = game.status;
+      if (st === 'running') playSeconds += Math.min(dt, 0.25);
       if (st === 'running') {
         if (songs.update(game.mama.x)) audio.playSong(songFor(songs.index, level.circuit), { fade: SONG_FADE });
         if ((preloadCheck += dt) > 0.5) { preloadCheck = 0; preloadAhead(); }
@@ -863,7 +894,7 @@ function installDebug() {
         followers: game ? game.followers.length : 0,
         save: clone(save), stored: stored(), settings: clone(settings), playSeconds,
         view: { ...renderer.view }, canvas: { w: canvas.width, h: canvas.height }, dpr: adaptive.dpr, adaptive: { ema: +adaptive.ema.toFixed(2), downs: adaptive.downs, ups: adaptive.ups, enabled: adaptive.enabled },
-        audio: { muted: audio.muted, ...audio.stats, ctx: audio._ctx ? audio._ctx.state : null, song: audio._songId, suspended: audio._suspended, hidden: audio._hidden },
+        wake: !!wake, audio: { muted: audio.muted, ...audio.stats, ctx: audio._ctx ? audio._ctx.state : null, song: audio._songId, suspended: audio._suspended, hidden: audio._hidden },
         reduced, portrait: isPortrait(), fade: fade.v, renderMode: game ? rendererMode() : null, actions: actionLog.length,
       };
     },

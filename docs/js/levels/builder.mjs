@@ -34,7 +34,10 @@ export class Builder {
     this.events = 0;               // required events built so far (hops, lifts, movers, walkers, flyers, spikes): the pacing controller's books
     this.stationLen = 0;           // total length of flag stations so far (safe ground that is not counted toward pacing)
     this.beatLog = [];             // names of the beats built, in order (acts record their slice; the variety tests read it)
+    this.beatX = [];               // where each of them starts (u), parallel to beatLog
     this.logStart = 0;             // where this landscape's beats begin in beatLog
+    this.evFirst = Infinity; this.evLast = -Infinity;   // see eventsSince()
+    this.lastEventX = -1e9;        // the end of the last required event built (the flat ground since then counts as recovery room)
     this.rich = {};                // spec -> { ev, len }: how many events per length each spec has delivered so far (learned as the world is built)
   }
 
@@ -43,13 +46,13 @@ export class Builder {
     return { p: this.plats.length, k: this.picks.length, e: this.enemies.length, h: this.hazards.length, s: this.springs.length,
       c: this.cps.length, q: this.quiet.length, f: this.firsts.length, seen: new Set(this.seen), cur: this.cur,
       curW: this.cur ? this.cur.w : 0, x: this.x, y: this.y, lg: this.lastGold, ls: this.lastShield, lm: this.lastMagnet, sg: this.sawGap,
-      ev: this.events, sl: this.stationLen, bl: this.beatLog.length };
+      ev: this.events, sl: this.stationLen, bl: this.beatLog.length, le: this.lastEventX };
   }
   rollback(m) {
     this.plats.length = m.p; this.picks.length = m.k; this.enemies.length = m.e; this.hazards.length = m.h;
     this.springs.length = m.s; this.cps.length = m.c; this.quiet.length = m.q; this.firsts.length = m.f;
     this.seen = m.seen; this.cur = m.cur; if (m.cur) m.cur.w = m.curW; this.x = m.x; this.y = m.y; this.bad = null; this.lastGold = m.lg; this.lastShield = m.ls; this.lastMagnet = m.lm; this.sawGap = m.sg;
-    this.events = m.ev; this.stationLen = m.sl; this.beatLog.length = m.bl;
+    this.lastEventX = m.le; this.events = m.ev; this.stationLen = m.sl; this.beatLog.length = m.bl; this.beatX.length = m.bl;
   }
 
   /**
@@ -59,19 +62,25 @@ export class Builder {
    */
   eventsSince(m) {
     let n = this.enemies.length - m.e + this.hazards.length - m.h;
+    let first = Infinity, last = -Infinity;
+    for (let k = m.e; k < this.enemies.length; k++) { const e = this.enemies[k]; const x = e.kind === 'walker' ? e.x0 : e.cx - e.ax; first = Math.min(first, x); last = Math.max(last, e.kind === 'walker' ? e.x1 : e.cx + e.ax); }
+    for (let k = m.h; k < this.hazards.length; k++) { first = Math.min(first, this.hazards[k].x); last = Math.max(last, this.hazards[k].x + this.hazards[k].w); }
     let prev = null;
     for (let k = m.p - 1; k >= 0 && !prev; k--) if (!this.plats[k].o) prev = this.plats[k];
     for (let k = m.p; k < this.plats.length; k++) {
       const q = this.plats[k];
       if (q.o) continue;
       const dyn = (p) => !!p.motion && !(p.kind === 'ledge' && p.motion.amp <= 10);
-      if (dyn(q)) n += 2;
-      else if (prev && !dyn(prev)) { const gap = q.x - (prev.x + prev.w); if (gap > 0 || prev.y - q.y > T.stepUp) n++; }
+      if (dyn(q)) { n += 2; first = Math.min(first, q.x); last = Math.max(last, q.x + q.w); }
+      else if (prev && !dyn(prev)) { const gap = q.x - (prev.x + prev.w); if (gap > 0 || prev.y - q.y > T.stepUp) { n++; first = Math.min(first, prev.x + prev.w); last = Math.max(last, prev.x + prev.w); } }
       prev = q;
     }
+    this.evFirst = first; this.evLast = last;           // where the first / last of those events sit (u): the pacing controller schedules by them
     return n;
   }
   fail(why) { if (!this.bad) this.bad = why; }
+  /** Record that the beat `name` starts at the cursor (variety bookkeeping and the beat listings of the report). */
+  logBeat(name) { this.beatLog.push(name); this.beatX.push(rd(this.x)); }
 
   /* ───────── platforms ───────── */
   plat(kind, x, y, w, o = {}) {
@@ -131,6 +140,15 @@ export class Builder {
         if (i < n - 1 || rand.chance(0.5)) for (let k = 0; k < 3; k++) this.egg(x + 130 + k * 26, top - 24);
       }
     }
+  }
+
+  /** Remove the ordinary eggs placed since pick index `from` that lie inside the box [x0,x1] x [y0,y1] (an optional ledge must never have eggs buried in it). */
+  clearEggs(from, x0, x1, y0, y1) {
+    for (let i = this.picks.length - 1; i >= from; i--) {
+      const q = this.picks[i];
+      if (q.kind === 'egg' && q.x >= x0 && q.x <= x1 && q.y >= y0 && q.y <= y1) this.picks.splice(i, 1);
+    }
+    for (let i = from; i < this.picks.length; i++) this.picks[i].id = i;
   }
 
   /** `n` eggs along the real jump taking off at feet (x, yFeet) and landing `dyEnd` lower. Body centre = feet - 20. */

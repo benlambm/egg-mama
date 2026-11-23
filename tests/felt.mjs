@@ -26,7 +26,7 @@ import { jumpWindow, spikeWindow } from '../docs/js/levels/phys.mjs';
 
 const C = T.cruise;
 export const CHAIN_U = 330;          // events closer than this are one chain (3 s)
-export const COMBO_U = 200;          // a different kind of event this close is a simultaneous demand
+export const COMBO_U = 220;          // a different FAMILY of event (hop / moving platform / walker / flyer / spike) this close is a simultaneous demand
 const kindOf = (k) => (k === 'ground' ? 'ground' : 'ledge');
 const isDyn = (p) => !!p.motion && !(p.kind === 'ledge' && p.motion.amp <= 10);       // Reedwater's logs only bob a little
 const median = (a) => { if (!a.length) return NaN; const s = [...a].sort((p, q) => p - q); return s[s.length >> 1]; };
@@ -57,8 +57,8 @@ export function requiredEvents(level) {
     const gap = q.x - (p.x + p.w), rise = p.y - q.y;
     if (gap <= 0 && rise <= T.stepUp) continue;
     const end = p.x + p.w;
-    if (gap > 0 && level.springs.some((s) => s.x >= end - 70 && s.x <= end)) { push(end, 'springhop', 'gap'); continue; }
-    const cls = q.kind === 'crumble' ? 'crumble' : 'gap';
+    if (gap > 0 && level.springs.some((s) => s.x >= end - 70 && s.x <= end)) { push(end, 'springhop', 'hop'); continue; }
+    const cls = 'hop';                                   // gaps, steps and crumbling landings are one family
     if (gap <= 0) { push(end, 'step', cls); continue; }
     const w = jumpWindow({ end, top: p.y, kind: kindOf(p.kind) }, { x: q.x, end: q.x + q.w, top: q.y, kind: kindOf(q.kind) });
     push(end, q.kind === 'crumble' ? 'crumbleHop' : 'hop', cls, w.secs);
