@@ -118,10 +118,10 @@ export const ACTS = {
 
   // ───── Beacon Summit: springs, lifts and timed jumps ─────
   recallBridges: { role: 'recall', w: 2.0, stages: [S(0.5, 'bridge', 'gapPair', 'bridgeArch'), S(0.5, 'gapChain', 'upper', 'branchSteps')] },
-  summitTeach: { role: 'teach', w: 3.4, stages: [Q(1, 'springGap+liftRide', 'liftRide+gap1', 'springLedge+gap1', 'liftClimb', 'springHops+gapPair')] },
-  summitVary: { role: 'vary', w: 3.4, stages: [S(0.35, 'springGap+liftRide', 'liftRide+springLedge', 'liftFerry', 'liftHop'), S(0.35, 'liftClimb+springGap', 'liftRide+gapPair', 'springTwo+liftRide', 'branchSteps', 'springHops'), S(0.3, 'springLedge+liftRide', 'liftCrumble+springGap', 'springChain', 'liftHop+gap1')] },
-  summitClimb: { role: 'setpiece', w: 3.6, stages: [Q(1, 'springGap+liftRide', 'liftClimb', 'springHops+liftRide', 'liftRide+springGap+gap1', 'liftClimb+springLedge', 'liftHop+springGap+gapPair')], finale: ['crown'] },
-  summitCombine: { role: 'combine', w: 3.2, stages: [S(0.3, 'liftRide+springGap+walker1', 'liftClimb+spike1', 'liftHop+gap1'), S(0.4, 'springTwo+liftRide+gap1', 'liftRide+springGap+gapPair', 'moverFerry+springGap+liftRide', 'liftFerry+springTall', 'springHops+gapChain'), S(0.3, 'liftCrumble+springGap+gap1', 'liftClimb+springLedge', 'branchSteps+liftRide', 'liftHop+springGap')] },
+  summitTeach: { role: 'teach', w: 3.4, stages: [S(0.34, 'springGap+liftRide', 'liftRide+gap1', 'liftFerry'), S(0.36, 'liftHop', 'springHops+gapPair', 'liftClimb', 'liftRide+gapPair'), S(0.3, 'liftHop+gap1', 'springGap+liftRide', 'springLedge+gap1', 'springHops')] },
+  summitVary: { role: 'vary', w: 3.4, stages: [S(0.35, 'springGap+liftRide', 'liftHop', 'liftFerry', 'branchSteps+liftRide'), S(0.35, 'liftClimb+springGap', 'liftRide+gapPair', 'springHops+gapChain', 'branchSteps', 'springTwo+liftRide'), S(0.3, 'liftCrumble+springGap', 'liftHop+springGap', 'springChain', 'springHops+gapPair')] },
+  summitClimb: { role: 'setpiece', w: 3.6, stages: [Q(1, 'springGap+liftRide', 'liftHop', 'springHops+liftRide', 'liftHop+springGap+gapPair', 'liftClimb+springLedge', 'springHops+gapChain')], finale: ['crown'] },
+  summitCombine: { role: 'combine', w: 3.2, stages: [S(0.3, 'liftRide+springGap+walker1', 'liftClimb+spike1', 'liftHop+gap1'), S(0.4, 'liftHop+springGap', 'springHops+gapChain', 'liftRide+springGap+gapPair', 'moverFerry+springGap+liftRide', 'liftFerry+springTall'), S(0.3, 'liftCrumble+springGap+gap1', 'liftHop+springGap+gapPair', 'branchSteps+liftRide', 'liftHop')] },
   summitClose: { role: 'closing', w: 1.6, flag: true, stages: [S(0.5, 'upper', 'gap1', 'gapPair', '@compact'), S(0.5, 'springGap', 'liftRide', 'gap1', '@compact')] },
 };
 
