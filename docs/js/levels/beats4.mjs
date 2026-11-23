@@ -25,7 +25,7 @@
 import { T, clamp } from '../tuning.mjs';
 import { P, ease, chainMax } from './params.mjs';
 import { C, flightTime, springLanding, trainFeasible } from './phys.mjs';
-import { def, BEATS, springLedge, capN, gapW, landW, islW, ledgeW, settle, fixHeights, gold, walkerEncounter, flyerEncounter, spikeW, crW, crG } from './beats.mjs';
+import { def, BEATS, springLedge, capN, riseGap, gapW, landW, islW, ledgeW, settle, fixHeights, gold, walkerEncounter, flyerEncounter, spikeW, crW, crG } from './beats.mjs';
 import { liftUp } from './beats2.mjs';
 
 const rd = Math.round;
@@ -51,7 +51,7 @@ def('gapHill', { needs: 'gap' }, (B, c) => {
 def('cliffHop', { needs: 'gap' }, (B, c) => {
   B.tag('gap', B.x);
   const h = rd(c.rand.range(24, 36));
-  B.train([{ gap: 0, w: rd(c.rand.range(210, 280)), dy: -h }, { gap: gapW(c, -4), w: landW(c) + 10, dy: h }]);
+  B.train([{ gap: riseGap(c), w: rd(c.rand.range(210, 280)), dy: -h }, { gap: gapW(c, -4), w: landW(c) + 10, dy: h }]);
   if (B.bad) return;
   settle(B, c);
 });
@@ -94,7 +94,7 @@ def('upperRoute', { needs: 'upper', hz: false }, (B, c) => {
 def('walkerStep', { needs: 'walker' }, (B, c) => {
   const patrol = rd(Math.max(96, P.walkerPatrol(c.d) + c.rand.range(-6, 6)));
   const h = rd(c.rand.range(22, 30));
-  B.train([{ gap: 0, w: 150 + patrol + 190, dy: -h, eggs: false }]);
+  B.train([{ gap: riseGap(c), w: 150 + patrol + 190, dy: -h, eggs: false }]);
   if (B.bad) return;
   const isl = B.cur;
   const w0 = isl.x + 150, w1 = w0 + patrol;
@@ -263,7 +263,7 @@ def('mothHill', { needs: 'flyer' }, (B, c) => {
   const ax = rd(P.flyerAx(c.d) + c.rand.range(-4, 4));
   const ay = rd(P.flyerAy(c.d));
   const h = rd(c.rand.range(22, 30));
-  B.train([{ gap: 0, w: 380 + 2 * ax + 60, dy: -h, eggs: false }]);
+  B.train([{ gap: riseGap(c), w: 380 + 2 * ax + 60, dy: -h, eggs: false }]);
   if (B.bad) return;
   const isl = B.cur;
   const cx = isl.x + 160 + ax + 65;
@@ -299,7 +299,7 @@ def('mothDip', { needs: 'flyer' }, (B, c) => {
 def('spikeStep', { needs: 'spikes' }, (B, c) => {
   const h = rd(c.rand.range(22, 30));
   const w = spikeW(c);
-  B.train([{ gap: 0, w: 300 + w + 260, dy: -h, eggs: false }]);
+  B.train([{ gap: riseGap(c), w: 300 + w + 260, dy: -h, eggs: false }]);
   if (B.bad) return;
   const isl = B.cur;
   const hz = B.spikes(isl.x + 300, w);
@@ -402,12 +402,14 @@ def('ferryStep', { needs: 'mover' }, (B, c) => {
 /** A missing span: deck, a cracked stone where the stones fell out, deck. */
 def('bridgeMissing', { needs: 'bridge' }, (B, c) => {
   B.tag('bridge', B.x);
-  B.train([
+  const specs = [
     { kind: 'ground', gap: gapW(c, -5), w: rd(c.rand.range(180, 240)), dy: 0, h: 140 },
     { kind: 'crumble', gap: crG(c), w: crW(c) + 8, dy: 0 },
     { kind: 'ground', gap: crG(c), w: islW(c) + 40, dy: 0, h: 140, gold: c.rand.chance(0.3) },
     { kind: 'ground', gap: gapW(c, -3), w: landW(c), dy: 0, h: 140 },
-  ]);
+  ];
+  if (c.rand.chance(0.35)) specs.splice(2, 1);                // sometimes the cracked stone leads straight to the far deck
+  B.train(specs);
 });
 
 /** Decks that rise to a crest and fall again. */
@@ -420,6 +422,7 @@ def('bridgeArch', { needs: 'bridge' }, (B, c) => {
     { kind: 'ground', gap: gapW(c, -4), w: islW(c) + 30, dy: a, h: 140, gold: c.rand.chance(0.3) },
     { kind: 'ground', gap: gapW(c, -3), w: landW(c), dy: a, h: 140 },
   ];
+  if (c.rand.chance(0.35)) specs.splice(1, 1);                // a shorter arch: up one deck, down onto the landing
   B.train(specs);
 });
 
@@ -433,6 +436,7 @@ def('bridgePillars', { needs: 'bridge' }, (B, c) => {
     { kind: 'ground', gap: gapW(c, -9), w: islW(c) + 40, dy: a, h: 140 },
     { kind: 'ground', gap: gapW(c, -3), w: landW(c), dy: 0, h: 140 },
   ];
+  if (c.rand.chance(0.35)) specs.splice(1, 1);                // two pillars instead of three
   fixHeights(B, specs);
   B.train(specs);
 });

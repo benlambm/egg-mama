@@ -39,9 +39,9 @@ export function placeCues(B, chapters, beacon) {
     if (x < first.x - 120) add(x, CHAPTERS[i].tip, 'tip');
     else add(Math.max(ch.x0 + 60 + SPACING, first.x - 130), CHAPTERS[i].tip, 'tip');
   }
-  // the first shield and magnet in the world
-  const tipFor = { shield: 'A blue shell blocks one hit', magnet: 'A magnet pulls eggs to you' };
-  for (const kind of ['shield', 'magnet']) {
+  // the first shield and magnet in the world (and the first WALL: a rise with no gap in front of it, where Mama stops until she is swiped up; the first four landscapes build none)
+  const tipFor = { shield: 'A blue shell blocks one hit', magnet: 'A magnet pulls eggs to you', wall: 'Stopped at a wall? Swipe up to hop on' };
+  for (const kind of ['shield', 'magnet', 'wall']) {
     const f = B.firsts.filter((t) => t.kind === kind).sort((a, b) => a.x - b.x)[0];
     if (!f) continue;
     const x = f.x - 200;

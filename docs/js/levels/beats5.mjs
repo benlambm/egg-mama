@@ -1,15 +1,18 @@
 /*
  * Egg Mama — more structural variants, and the ICE SEQUENCES.
  *
- * Ice in this game (sim.mjs): on ice she changes speed slowly (T.iceAccel 70 u/s^2 against 620 on plain ground), in the air
- * she steers as usual (260). So a swipe on ice is a long, gentle thing: a push builds speed over most of a second and she
- * keeps it after landing; a brake takes room, it slows her to about half but never stops her at once. The REQUIRED route
- * never asks for either (jump-only at default cruise is the generator's hard guarantee), so ice is where steering PAYS:
+ * Ice in this game (sim.mjs), measured honestly: on ice she changes speed slowly (T.iceAccel 70 u/s^2 against 620 on plain ground), in the
+ * air she steers as usual (T.airAccel 260), and the roll returns to cruise when a swipe's 0.8 s are up. So on the ground a push builds
+ * speed over most of a second and a brake takes a long slide, but a push only helps a JUMP if it is still on while she flies: issued in
+ * the last ~0.6 s before the takeoff or up to ~0.25 s into the air (the same on plain ground: a push issued 0.9 s before the takeoff
+ * has run out), and braking is never rewarded. Ice is therefore a matter of FEEL (swipes answer slowly), not of new possibilities, and
+ * the Frostline words say exactly that. The REQUIRED route never asks for a swipe (jump-only at default cruise is the generator's hard
+ * guarantee); the optional sequences below are where steering pays:
  *
  *   iceLeap    an optional high ledge, then a gap of ~112 u (the most one swipe up reaches at cruise is ~105 u) to a second
- *              ledge with a golden egg. A push in the last second before the edge carries her across; without it she
- *              drops back to the path below. (tests/levels.test.mjs finds the push + jump in the real sim, and checks that
- *              no jump-only play ever collects the golden egg.)
+ *              ledge with a golden egg. A push in the last half second before the edge (or a quarter second into the jump) carries
+ *              her across; without it she drops back to the path below. (tests/levels.test.mjs finds the push + jump in the real
+ *              sim, and checks that no jump-only play ever collects the golden egg.)
  *   iceSpring / springBrake / springPush   a spring FIXES where she takes off, so only a swipe in the air changes where she
  *              lands: an optional ledge ~45 u short of the plain landing needs a brake, one ~30 u beyond it a push.
  *
@@ -35,6 +38,7 @@ export const PUSH_REACH = 112;
 
 def('iceLeap', { needs: 'ice', hz: false }, (B, c) => {
   B.tag('iceLeap', B.x);
+  B.tag('ice', B.x);                                   // (the Frostline tip comes before the first ice there is, optional or not)
   B.run(120, 'line');
   const base = B.y;
   const rise = rd(c.rand.range(58, 68));
@@ -96,6 +100,7 @@ function springSteer(B, c, kind, ice) {
   B.run(40 + 300, 'none');
   B.spring(sx);
   B.tag('spring', sx);
+  if (ice) B.tag('ice', sx);
   const rise = rd(c.rand.range(96, 110));          // higher than this and the golden egg could be picked up on the way UP, without landing
   const D0 = springLanding(sx, rise) - sx;                                // where a flight with no steering lands (relative)
   if (!(D0 > 0)) { B.fail('spring'); return; }

@@ -10,7 +10,7 @@ import { T, clamp } from '../tuning.mjs';
 import { P, chainMax } from './params.mjs';
 import { Y0 } from './builder.mjs';
 import { C, flightTime, jumpWindow, trainFeasible, MAX_RISE } from './phys.mjs';
-import { BEATS, def, gapW, landW, crW as crumbleWidth, settle, capN } from './beats.mjs';
+import { BEATS, def, gapW, landW, crW as crumbleWidth, settle, capN, riseGap } from './beats.mjs';
 
 const rd = Math.round;
 const TAU = Math.PI * 2;
@@ -109,7 +109,7 @@ def('liftDescent', { needs: 'liftCrumble' }, (B, c) => {
   const { rand, d } = c;
   const steps = 2;
   const specs = [];
-  for (let i = 0; i < steps; i++) specs.push({ gap: rand.chance(0.5) ? 0 : rd(rand.range(30, 40)), w: rd(rand.range(150, 200)), dy: -rd(rand.range(36, 46)) });
+  for (let i = 0; i < steps; i++) specs.push({ gap: riseGap(c), w: rd(rand.range(150, 200)), dy: -rd(rand.range(36, 46)) });
   B.train(specs);
   if (B.bad) return;
   B.run(160, 'line');

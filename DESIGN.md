@@ -120,34 +120,85 @@ landscape's x range and the id of its first flag; platforms carry `ch`; checkpoi
 long safe island with a flag, a quiet stretch (≥ 700 u without hazards) and its story cue; the join between landscapes
 is a normal, easy, safe stretch of ground (no gate, no pause) — the dissolve happens over it.
 
-**Structure of one landscape (3½–5⅓ minutes must *hold a child's attention*):** about 5–7 **acts** of 30–50 s, each a
-small arc with its own character: *recall* (easy re-use of what she already knows), *teach* (the landscape's signature
+**Structure of one landscape (3½–5⅓ minutes must *hold a child's attention*):** about 7 **acts**, each a
+small arc with its own character (measured over 16 000 acts: recall ≈ 28 s, teach / vary / combine ≈ 45 s, breather ≈ 15 s,
+closing ≈ 20 s, the set piece ≈ 60 s and never over 85 s): *recall* (easy re-use of what she already knows), *teach* (the landscape's signature
 move, isolated — see `learn`), *vary*, *combine*, a **breather** (egg field / scenic stretch / flock moment — no hazards,
 15–25 s, a flag), a **set piece** (a memorable, hand-composed-feeling sequence unique to the landscape: the windmill
 yard, the floating-logs run, the quarry crane, the moth lanterns, the canyon spike run, the cliff lifts, the crystal
 descent, the ice slide, the moon bridge, the broken bridge, the summit climb) and a **closing** challenge that eases into
 the next landscape. Difficulty inside a landscape is a gentle *sawtooth on a slow ramp*: each act peaks slightly above
-the last, each breather relaxes, and the baseline across the hour is `difficulty(chapter, circuit, within)` (0 → ~11).
+the last, each breather relaxes, and the baseline across the hour is `levelDifficulty(chapter, circuit, within)` (`levels/params.mjs`: 0 → ~11 in circuit 1, see rule 8).
 Variety comes from many segment variants, seeded randomisation of widths/heights/spacing, optional **upper routes** with
 golden eggs (harder jumps, springs, riskier timing), **treasure caches**, shield/magnet pickups, and story captions
 (`level.cues`: the landscape's `story` near its start, each `chapter.trail` line at its `at` fraction, plus tips just
 before the first appearance of each new element — e.g. 'Swipe up to jump' ~250 u before Meadow's first gap).
 No two consecutive acts may use the same segment template; keep a ring buffer of recent templates.
 
-**Difficulty (LEVEL-2), slowly.** Scale from `difficulty()`: gap widths (≤ `T.maxGapEasy` → `T.maxGapHard`), landing
+**Difficulty (LEVEL-2), slowly.** Scale from `levelDifficulty()`: gap widths (≤ `T.maxGapEasy` → `T.maxGapHard`), landing
 widths (≥ `T.minLanding`), enemy count/speed, chained moves, crumble/lift/mover timing, recovery room between hazards. A
 landscape's *new* element is introduced alone, at low intensity, repeated with growing intensity across several acts before
 it is combined with others. Early landscapes isolate one decision at a time; later ones combine skills, shorten safe
-timing windows (never below `T.minWindow` s) and ask for a planned second landing. **Nothing may feel like a difficulty
+timing windows (never below `T.minWindow` s; in practice no required hop or spike has a model window under 0.36 s, which is
+≥ 0.30 s measured in the sim) and ask for a planned second landing. **Nothing may feel like a difficulty
 jump at a landscape boundary**: the first act of landscape *i+1* is at most ~1 difficulty point above the last act of *i*.
+
+**The felt ramp: the pacing controller (LEVELS-2/3).** Difficulty `d` shapes *how hard* an event is; the controller shapes *how
+many* a minute. `params.RATE(i, within, circuit)` is a table of **threat-weighted required events a minute** per landscape, rising
+from ≈ 5.3 in Meadow to ≈ 11 at the Summit (a hop, a wall, a lift or mover board and exit, a walker and a static spike count 1; see
+*threat weights* below). `levelgen` turns a landscape's rate into a quota of events for each act (shared by weight and
+`ROLE_RATE`: recall and closing a little calmer, set piece and combine a little busier), and `acts.mjs` spaces the events: the next
+one is due at `x0 + (events so far + ½) * per`, the first rest of every spec is as long as it takes to land there, and
+`tryOrder()` picks WHICH spec by variety (no beat above a quarter of a landscape; the landscape's own element is favoured most in its
+teaching act, `OWN_BONUS`), by how well the spec's events per length match the pace, by `params.chainCap` (singles early,
+doubles, triples ... fives at the summit) and by starvation (≥ 1100 u without a required event: only a beat that has one will do). A
+hard check in `runSpec` refuses a spec that would grow a chain (events less than ~3 s apart, counting the ones before) past 4
+in the first six landscapes (7 later). The controller is a heuristic and its results are only ever judged from the BUILT
+geometry (tests/felt.mjs), never from `RATE`.
+
+*Threat weights.* A moth is something to READ, but a Mama who never jumps is hit by only about a third of the low ones and by no
+high one she rolls under (25 of Fogwood's 28 events had been moths: 3.5 planner jumps a minute against 8.2 in Amber Quarry). So
+an event counts what it really asks: `phys.flyerThreat` (the share of 24 game-clock phases at which an idle Mama rolling through
+the flyer's zone is hit, with the sim's own overlap rule), a cycling spike the share of the time it is up, a spring that carries a
+gap `SPRING_THREAT` 0.25 (she rolls on and flies), everything else 1. `tests/felt.mjs` measures the same thing independently
+(finer, from the finished level), and the tests compare both with an idle Mama in the real sim. The ramp the tests assert is the
+threat-weighted one; **the planner bot's jumps a minute** (a calm player's real actions) track it within 20 % in every landscape.
+Fogwood's acts are now moths *and* mossy logs, gaps and cracked stones (a moth beat usually comes with a hop), Orchard's springs
+carry gaps but its required route is hops, logs and branch steps.
+
+*The definitions* (tests/felt.mjs documents each; the tests assert all of them): `density` = every required event of a landscape
+per minute of its whole length (opening, join, breathers and flag stations included: what a child gets per minute of play);
+`liveDensity` = only the live acts (no opening, join, breathers or stations); `liveInclDensity` = everything but breathers and
+stations. Each exists raw and threat-weighted (`wDensity`, `wLiveDensity`, `wLiveInclDensity`). Measured (16 journeys, circuits 1-4):
+the threat-weighted ramps have Spearman ≥ 0.95 and no landscape under 0.93 of the one before; the raw ones ≥ 0.90 and ≥ 0.91
+(a moth and a spring are whole events there, so they ramp a little less cleanly: that is exactly why they are not the claim).
+
+*The dead-stretch guard* (`levels/densify.mjs`). The controller's rests and the flag stations (600 u of guaranteed safe ground) leave a
+tail in the distribution of the wait between two required events. After the circuit is built, any wait over 18 s (20 s in Meadow
+and Clover Mill, 31 s where a breather act sits in it) gets one small hop CARVED into the flat ground between its events: a gap
+taken out of a long island, ≥ 260 u of ground each side, ≥ 3 s from every other event, clear of every flag's safe zone, the
+opening (860 u), the join (400 u), optional ledges and arcs of eggs, and a window checked with `trainFeasible` (≥ 0.42 s); nothing
+else moves. Measured: no run waits over 26 s for a required event in any landscape (it was 2.8-3.3 % of runs, 32 % in Clover Mill),
+the p90 of the waits is under 18.5 s everywhere.
+
+*Circuits saturate.* `levelDifficulty` is chapters.difficulty() in circuit 1 (0 → ~11), the same 4.5 higher in circuit 2, and from
+circuit 3 on EXACTLY circuit 2's ramp, capped at `D_MAX` 16: a child who reaches circuit 3 has played two hours and still
+starts as gently as circuit 2's Meadow, and no window ever drops below the floor in any circuit (tested for circuits 1-6, 7, 12,
+20, 99, 1000 and 4096). What grows is only the number of events a minute, a little and with diminishing returns (`circuitRate`:
++0.8 in circuit 2, up to +0.9 more by the Summit, never beyond that).
 
 **Fairness rules (hard constraints, enforced by tests):**
 1. The first ≥ 900 u of the world and the first ≥ 700 u of every landscape have no hazard, enemy, or required jump.
    Meadow's first golden egg is on flat safe ground within its first 700 u; its first required gap comes after that,
-   ≤ 46 u wide with a ≥ 160 u landing, preceded by the tip caption.
+   ≤ 46 u wide with a ≥ 160 u landing, preceded by the tip caption. The first-appearance captions (`level.cues`, kind `tip`)
+   also cover the first **wall** of a journey (a rise with no gap in front of it, where Mama stops dead until she is swiped up:
+   walls are rare, about 1 a landscape, and a rise is otherwise a small hop).
 2. Every required jump is possible at the default cruise with one swipe: gap ≤ `min(T.maxGapHard, jumpDistance()-…)`, takeoff
    window ≥ `T.minWindow` seconds (compute from `jumpDistance`, `coyote`, `edgeForgive`, landing height difference).
-   Swipe-right/left are optional helpers, never required — **except** that ice acts may require an early brake.
+   Swipe-right/left are optional helpers, never required. (Ice is slippery — Mama is slow to speed up and slow to slow down — but
+   in the sim it never enables a jump or a stop that plain ground does not: a push only helps a jump if it is issued within ~0.6 s
+   before the takeoff or ~0.25 s into the air, braking is never rewarded, and the Frostline words say so; the optional
+   ice and spring-steering beats below are where a swipe pays.)
 3. A checkpoint flag sits on static *ground* (`kind:'ground'`) before every demanding sequence (≥ 350 u of safe ground
    after the flag before the next hazard, ≥ 250 u of safe ground before it) and at least every 35 s of main-route time.
    Flags are numbered by x; `checkpoints[0]` is the world start; `chapters[k].flag` is the flag that opens landscape k;
@@ -155,36 +206,53 @@ jump at a landscape boundary**: the first act of landscape *i+1* is at most ~1 d
 4. Every required landing and every hazard on the main route is on screen ≥ 1.2 s before it matters (nothing the player
    must read within 300 u of the camera's left edge; main-route platforms stay within y ∈ [150, 310]; lifts/movers have room).
 5. Enemies on the main route: walkers patrol ≥ 90 u, speed ≤ 55 u/s (scaled), with ≥ 120 u of flat ground beyond to land on;
-   flyers only over ground, never over a required landing. Spikes ≤ 60 u wide with a ≥ 120 u approach.
+   flyers only over ground, never over a required landing. Spikes are 7–8 u wide (takeoff window 0.43–0.44 s in the sim, against
+   0.45–0.57 s for the median gap hop; the art is drawn much bigger than the hitbox on purpose) with a ≥ 120 u approach and ≥ 250 u of
+   room after a landing in the first two spike landscapes. A clumsy small child (120 ms of unnoticed latency, ±120 ms of jitter)
+   clears ≥ 88 % of Ember Canyon's segments (62 % with 14 u thorns), nothing under 83 %.
 6. Missing any egg never blocks completion. Golden eggs: roughly one per 40–60 s on/near the main route (≥ 5 per
    landscape reachable with at most one easy jump) + upper-route golden eggs (1–3 per act sequence) for harder jumps/springs.
    Ordinary eggs trace jump arcs over gaps, lines on the ground, arcs over enemies (traced from the real parabola).
    Shield (from the 3rd landscape on, ~1 per 90 s) and magnet (~1 per 3 min) pickups.
 7. The beacon (landscape 13) is last, on safe ground ≥ 300 u after the final hazard; `endX = beacon.x + 140`; `level.beacon` set.
-8. Circuits ≥ 2: fresh terrain (different seed, different arrangement of templates), difficulty offset (+4.5/circuit,
-   capped at 20); everything still passes 1–7.
+8. Circuits ≥ 2: fresh terrain (different seed, different arrangement of templates), difficulty +4.5 in circuit 2 and then
+   NO harder (the ramp saturates at circuit 2's, `D_MAX` 16; only the events a minute grow, a little: `circuitRate`);
+   everything still passes 1–7, in circuits 1–6 and a few huge ones.
 
 **Segment toolbox** (suggested; add many more variants — a 59-minute game needs dozens of templates): flat run with egg trail;
 wide gap with egg arc; step-up/down islands; stepping ledges over water; walker patrol (stomp or hop); spring pad to an
 upper ledge/golden egg and back; crumble chain; flyer crossing; gap-then-spikes chain with recovery island; cycling spikes;
 vertical lift to a high ledge; horizontal mover between islands; lift → crumble transfer; ice run with gaps; broken-span
 bridge; summit ascent combining springs, lifts, timed jumps; breathers (egg field, gentle rolling hills of low ledges,
-flock moment); treasure alcoves.
+flock moment); treasure alcoves; optional **steering** sequences above an unbroken main route (`iceLeap`: a ~112 u leap that a
+push just before the edge carries; `springBrake` / `springPush` / `iceSpring`: a spring fixes where she takes off, so only a swipe
+in the air reaches the ledge) — never required, golden eggs for good steering.
 
 **Platform vocabulary:** `ground` islands are thick (`h` 90–140, drawn to the bottom of the frame) and solid at the sides;
 `ledge`/`crumble`/`lift`/`mover` are thin one-way slabs (`h` 14–18). `ice:true` makes any of them slippery. Moving platform
 `amp` ≤ 90, `period` 3.2–6 s. Lifts/movers are ≥ 150 u wide (she keeps rolling while she rides).
 
-**Validation (tests/levels.test.mjs + tests/bot.mjs):** a look-ahead *planner bot* plays the real `sim` using only the
+**Validation (tests/levels.test.mjs + tests/bot.mjs + tests/felt.mjs):** a look-ahead *planner bot* plays the real `sim` using only the
 actions a thumb has (`jump`, `brake`, `push`, ≥ 0.15 s apart) by cloning the game (`cloneGame`) and searching short action
 sequences. Because a circuit is an hour of play, verify **segment by segment**: for every pair of consecutive flags (all
-~130 segments of a circuit; default test run samples a spread, `FULL=1` does all) start `createGame(level, carry,
+~130-170 segments of a circuit; default test run samples a spread, `FULL=1` does all) start `createGame(level, carry,
 {checkpoint:i})` and require: (a) the planner bot reaches flag i+1 with **zero hits and zero falls**; (b) a *human-noise*
 bot (80 ms latency, ±50 ms jitter) does so without dying in ≥ 90 % of runs; (c) summing segment clean-times
 (allowSteer:false) gives each landscape within `paceBand(i)` and the circuit within `T.journeyMinutes`; (d) determinism and
-generation time; (e) rules 1–7 checked statically (and rule 8 for circuits 2–3); (f) restoring at every flag works; (g)
-difficulty never jumps across a landscape boundary (compare a computed per-act demand score); (h) variety: no template
-repeats back-to-back and each landscape's signature element is present with the right intensity progression.
+generation time (< 150 ms cold, ~30 ms warm); (e) rules 1–7 checked statically (and rule 8 for circuits 1-4, 1-6 under FULL); (f)
+restoring at every flag works; (g)
+difficulty never jumps across a landscape boundary (compare a computed per-act demand score; worst measured join 3.6 points, asserted 3.8);
+(h) variety: no template repeats back-to-back and each landscape's signature element is present with the right intensity
+progression. The **felt** measures (tests/felt.mjs, read from the finished geometry only, never from a generator curve):
+(A) the threat-weighted and raw event ramps with and without the opening, join, breathers and stations (definitions above),
+chains lengthening, windows shrinking, simultaneous demands, and **the planner's jumps a minute**; **the threat model** against an
+idle Mama in the real sim, beat by beat; (B) no dead stretches (no run over 26 s, p90 ≤ 18.5 s, per landscape) and the carved
+hops' placement; (C) variety (no beat above a third of a landscape, no geometry fingerprint above ~40 % from Clover Mill on,
+Dawnbridge's plain hops ≤ 72 % in circuit 1, lifts ≤ 34 % of the Summit's events) and walls; (D) the optional ice and
+spring-steering sequences need a swipe and are never required, and the push timing windows pin the Frostline words; (E)
+imperfect players per landscape: a button-masher (no plan), a sloppy bot (80 ms, ±80 ms) and a clumsy child (120 ms, ±120 ms);
+(F) takeoff windows MEASURED in the real sim for circuits 1-4 (hops ≥ 0.30 s, spikes ≥ 0.40 s). The windows, the dead-stretch
+tail, the ramps and the floors are also checked for circuits 1-6 and a few huge circuit numbers.
 
 ## 5. Art (ACTORS, TERRAIN)
 
@@ -225,7 +293,9 @@ Ducklings ≈ 20 u. Eggs ≈ 16×20 u; golden ≈ 22×28 u. Walkers 34×26, flye
 **TERRAIN exports** (`art-terrain.mjs`):
 ```
 drawPlatform(ctx, cache, p /*runtime platform*/, chapter, t)      // ground (thick, to y=T.killY), ledge, crumble (state!), lift, mover; ice flag; chapter.skin + palette
-drawSpikes(ctx, cache, h, chapter, t, warn)                       // hazard skin thorn|stone|crystal|urchin; cycling hazards wiggle when warn>0, retract when inactive
+drawSpikes(ctx, cache, h, chapter, t, warn)                       // hazard skin thorn|stone|crystal|urchin; cycling hazards wiggle when warn>0, retract when inactive.
+                                                                      // The hitbox is 7-8 u wide (rule 5): ONE module is baked ~1.42x its authored size (~20-28 u across) with a key-line and a hot halo,
+                                                                      // so the art is far bigger than what hurts (Mama is hurt within ~14 u of its centre, her art overlaps from ~30 u): errs on the forgiving side
 drawSpring(ctx, cache, s, chapter, t)                             // mushroom|coil|cloud; compress when game.t-s.bounceT < 0.3
 drawGate(ctx, cache, { x, y, chapter, t, progress /*0..1 open*/ }) // chapter exit arch with ribbon
 drawBeacon(ctx, cache, { x, y, lit, litT, t })                    // summit tower; litT = seconds since lit for the flare

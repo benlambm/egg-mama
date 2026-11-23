@@ -30,9 +30,10 @@
  * Imperfect players (LEVELS-2; the report and the (E) tests use them):
  *   playMash(level, opts)      a button-mashing toddler: no plan, jumps the instant Mama lands, random extra jumps and
  *                              random push / brake swipes; one flag-to-flag segment, no flock (a hit ends the try)
- *   clearRates(level, { kind: 'mash' | 'sloppy', trials, stride, seed })
+ *   clearRates(level, { kind: 'mash' | 'sloppy' | 'clumsy', trials, stride, seed })
  *                              per-landscape share of flag-to-flag segments cleared. 'sloppy' is the planner bot with 80 ms of
- *                              UNCOMPENSATED latency and +-80 ms of jitter: a calm but clumsy player
+ *                              UNCOMPENSATED latency and +-80 ms of jitter: a calm but clumsy player; 'clumsy' the same with 120 ms
+ *                              and +-120 ms: a small child on a slow phone (every jump arrives 0-240 ms late)
  */
 import { T } from '../docs/js/tuning.mjs';
 import { createGame, startRun, act, step, cloneGame } from '../docs/js/sim.mjs';
@@ -389,6 +390,7 @@ export function playMash(level, opts = {}) {
  * Per-landscape clear rates of a whole level for a kind of imperfect player, segment by segment.
  *   kind 'mash'    the toddler above, `trials` seeds per segment
  *   kind 'sloppy'  the planner bot with 80 ms of UNCOMPENSATED latency and +-80 ms of jitter (a calm but clumsy player)
+ *   kind 'clumsy'  the same with 120 ms and +-120 ms
  * Returns { rates: [13 fractions], runs: [13 counts], overall }. A segment counts as cleared when she reaches the next flag
  * with no flock to absorb a hit (every hit would end the attempt).
  */
@@ -403,7 +405,7 @@ export function clearRates(level, { kind = 'mash', trials = 3, stride = 1, seed 
       const sd = mixSeedLite(seed, i, k);
       const r = kind === 'mash'
         ? playMash(level, { startCheckpoint: s.from, stopAtCheckpoint: s.to, seed: sd, tOffset: (sd % 977) / 97, ...opts })
-        : playLevel(level, { startCheckpoint: s.from, stopAtCheckpoint: s.to, allowSteer: false, tOffset: (sd % 977) / 97, noise: { latency: 0.08, jitter: 0.08, compensate: false, seed: sd }, ...opts });
+        : playLevel(level, { startCheckpoint: s.from, stopAtCheckpoint: s.to, allowSteer: false, tOffset: (sd % 977) / 97, noise: { latency: kind === 'clumsy' ? 0.12 : 0.08, jitter: kind === 'clumsy' ? 0.12 : 0.08, compensate: false, seed: sd }, ...opts });
       runs[s.ch]++; if (r.ok) ok[s.ch]++;
     }
   }

@@ -7,6 +7,24 @@
  * ramp agree about what "harder" means.
  */
 import { T, clamp, lerp } from '../tuning.mjs';
+import { difficulty } from '../chapters.mjs';
+
+/**
+ * The difficulty the generator uses for landscape `i` (0-based) at `within` (0..1) of circuit `circuit`.
+ *
+ * Circuit 1 is chapters.difficulty() as it stands (0 -> ~11: slow, nearly linear). Circuit 2 is the same ramp 4.5 higher (a child
+ * who keeps going has played an hour and is ready for a little more). From circuit 3 on NOTHING gets harder in demand: the ramp is
+ * circuit 2's, so a circuit starts no harder than circuit 2's Meadow, ends no harder than circuit 2's Summit, and D_MAX caps it
+ * (a child who reaches circuit 3 has played two hours and still starts gentle). What grows is only the NUMBER of events a minute
+ * (RATE: a small, saturating lift per circuit), never the takeoff windows: with d <= D_MAX every required hop keeps a window of at
+ * least ~0.33 s in the model (>= 0.30 s measured in the sim) in ANY circuit, however many.
+ * (chapters.difficulty()'s own circuit term, +4.5 a circuit capped at 20, is no longer what the generator reads.)
+ */
+export const D_MAX = 16;
+export function levelDifficulty(i, circuit, within = 0) {
+  const d = difficulty(i, 1, within) + (circuit >= 2 ? 4.5 : 0);
+  return Math.min(D_MAX, d);
+}
 
 /** 0..1 eased difficulty (slightly concave so the first half of the journey stays gentle). */
 export const ease = (d) => Math.pow(clamp(d / 20, 0, 1), 0.85);
@@ -38,10 +56,12 @@ export const P = {
   flyerPeriod: (d) => at(4.9, 3.3, d),
   /**
    * spikes: width (u). A spike hop's takeoff window is (54.9 - w) u (see phys.spikeWindow: her body must be 13 u clear of the
-   * thorns on both sides), so 14 u gives 0.37 s and 19 u gives 0.33 s. (22 -> 32 u gave 0.30 -> 0.21 s: the one element in the
-   * game that a sloppy but calm player kept hitting, while every gap, lift and enemy has a window of 0.35 s or more.)
+   * thorns on both sides), so 7 u gives 0.43 s, 14 u 0.37 s and 19 u 0.33 s. Spikes were the tightest element (0.35 s against 0.44-0.55 s
+   * for a hop): a clumsy small child (120 ms of unnoticed latency, +-120 ms of jitter) cleared only 62 % of Ember Canyon's segments
+   * with 14 u thorns, ~88 % with 7-8 u ones. The art is baked ~1.42x bigger than a thorn module on purpose and is far bigger than the
+   * hitbox now (Mama is hurt within ~14 u of its centre, her art overlaps from ~30 u): errs on the forgiving side.
    */
-  spikeW: (d) => at(14, 19, d),
+  spikeW: (d) => at(6, 9, d),
   /** crumbling ledges */
   crumbleW: (d) => at(104, 70, d),
   crumbleGap: (d) => at(22, 42, d),
@@ -57,16 +77,24 @@ export const P = {
 };
 
 /**
- * How many REQUIRED events per minute a landscape should ask for (per minute of the whole landscape: flag stations and
- * breathers included, which is what a child experiences). This is the felt ramp: about 5.4 a minute in Meadow rising slowly to
- * about 11 at the Summit (a hop, a lift ride, a walker, a flyer, a spike each count one); the table runs a little above the straight
- * line in the chain-heavy landscapes (stepping logs, cracked ledges) whose signature is a run of hops; the Summit's entry is a pull
- * (its lift and spring beats are long, so the controller settles near 11). `within` nudges it up
- * through a landscape; every later circuit asks 0.9 more but still starts gentle. levelgen paces each landscape to this by rest
- * length; the tests check the result from the built geometry (tests/felt.mjs), never from this function.
+ * How many THREAT-WEIGHTED required events per minute a landscape should ask for (per minute of the whole landscape: flag stations and
+ * breathers included, which is what a child experiences). This is the felt ramp: a hop, a wall, a walker, a static spike, a lift or mover
+ * board and exit count 1, a flyer the share of the time a Mama who never jumps is hit by it (~0.35 for a low moth, 0 for a high one:
+ * phys.flyerThreat), a spring that carries a gap 0.25. The table is CALIBRATED (not the straight line it looks like): each entry is what
+ * the controller was asked for so that the BUILT landscape lands on a smooth ramp, about 5.3 a minute in Meadow rising to about 11 at the
+ * Summit (measured over 16 journeys; the carved hops of the dead-stretch guard add about one in ten). The chain-heavy landscapes
+ * (stepping logs, cracked ledges) cannot go below ~7 and ~8 whatever is asked, so their entries are low; Meadow's and Clover Mill's are
+ * low because the dead-stretch guard adds hops there; the Summit's lift and spring beats are long. `within` nudges it up through a
+ * landscape; later circuits ask a little more (circuitRate: saturating) but still start gentle. levelgen paces each landscape to this by
+ * rest length; the tests check the result from the built geometry (tests/felt.mjs), never from this function.
  */
-const RATE_TABLE = [5.4, 6.0, 7.0, 7.3, 7.6, 8.0, 8.5, 9.0, 9.4, 9.9, 10.4, 10.7, 12.4];
-export const RATE = (i, within = 0.5, circuit = 1) => Math.min(13.8, RATE_TABLE[i] + (within - 0.5) * 0.5 + 0.9 * (circuit - 1));
+const RATE_TABLE = [3.9, 4.0, 5.7, 7.5, 5.6, 8.4, 8.8, 8.7, 8.4, 9.6, 10.3, 10.6, 11.4];
+export const RATE = (i, within = 0.5, circuit = 1) => Math.min(13.8, RATE_TABLE[i] + (within - 0.5) * 0.5 + circuitRate(i, circuit));
+/**
+ * Later circuits ask a few more events a minute, but only a few and with diminishing returns: +0.8 in circuit 2, then up to
+ * +0.9 more by the Summit (saturating: circuit 3 +0.45 at the Summit, circuit 4 +0.68, never more than +0.9), none of it in Meadow.
+ */
+export const circuitRate = (i, circuit) => (circuit < 2 ? 0 : 0.8 + 0.9 * (1 - Math.pow(0.5, circuit - 2)) * (i / 12));
 
 /** How much of the landscape's events each kind of act carries, relative to the others (the gentle sawtooth inside a landscape). */
 export const ROLE_RATE = { opening: 0, recall: 0.8, teach: 0.9, vary: 1.0, combine: 1.15, setpiece: 1.2, breather: 0, closing: 0.85 };

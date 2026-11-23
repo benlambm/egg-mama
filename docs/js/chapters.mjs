@@ -111,9 +111,9 @@ export const CHAPTERS = [
   {
     id: "frostline", name: "Frostline", bg: "assets/frostline.webp", song: "frostline",
     seconds: 295,
-    story: "Ice makes the climb slippery. It keeps Mama's speed, so swipe early to push or brake.",
-    learn: "Anticipate an icy stopping distance: ice keeps Mama's speed, so push early to leap far and brake early to slow down. Golden eggs wait for good steering.",
-    tip: "Ice is slippery: steer early",
+    story: "Frost has made the path slippery. Mama is slow to speed up or slow down on ice, so a swipe takes a moment to work.",
+    learn: "On ice Mama is slow to speed up and slow to slow down. A push carries her farther if you swipe just before you jump or in mid-air, and a brake takes a long slide to work. Golden eggs wait for good steering.",
+    tip: "Ice is slippery: swipes work slowly",
     palette: pal(["#83c8eb", "#f1fcff", "#bee8f4", "#75b8d1", "#558cad", "#90c8dc", "#425d85", "#29415b", "#fdedcc"]),
     skin: { ground: "ice", ledge: "ice", walker: "mite", flyer: "owl", hazard: "crystal", spring: "cloud" },
     fx: "snow", dark: false, fog: 0, ice: true,

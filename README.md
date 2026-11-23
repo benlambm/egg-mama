@@ -28,7 +28,7 @@ Keyboard (for testing on a laptop): Space/Up/W jump, A/D or the arrow keys steer
 - **Checkpoint flags** save automatically. After a fall you return to the last flag.
 - **Continue** resumes the last flag; **Retry checkpoint** after a fall; **Start Over** asks first.
 - Rotating the phone upright pauses the game and shows a "turn your phone" prompt.
-- The beacon offers **Keep Going** (a new, tougher circuit that carries your flock, eggs and score) or **Main Title**.
+- The beacon offers **Keep Going** (a fresh circuit that carries your flock, eggs and score; the second circuit is a little harder and busier, the later ones are as hard as the second and never harder) or **Main Title**.
 
 An existing save from the earlier GitHub Pages build (`egg-hero-journey-v1`) still works: Continue opens it.
 
@@ -36,7 +36,7 @@ An existing save from the earlier GitHub Pages build (`egg-hero-journey-v1`) sti
 
 ```sh
 python3 -m http.server 8080 --directory docs   # then open http://localhost:8080/
-node --test                                    # unit + level-fairness tests (about a minute)
+node --test                                    # unit + level-fairness tests (about two and a half minutes)
 ```
 
 Add `?debug` to the URL to get `window.__egg` (teleport, fast-forward, force the beacon) for testing.
@@ -45,8 +45,8 @@ Add `?debug` to the URL to get `window.__egg` (teleport, fast-forward, force the
 
 | Command | What it checks |
 | --- | --- |
-| `FULL=1 node --test tests/levels.test.mjs` | A planner bot plays every flag-to-flag segment of three circuits (about 12 minutes) |
-| `node tools/level-report.mjs` | Per-landscape length, pacing, hazards and difficulty ramp of a generated circuit |
+| `FULL=1 node --test tests/levels.test.mjs` | A planner bot plays every flag-to-flag segment of three circuits, the static and window checks cover six (about 15 minutes) |
+| `node tools/level-report.mjs` | Per-landscape length, pacing, hazards and difficulty ramp of a generated circuit (`--bot`: the planner's jumps a minute; `--felt --bots`: the threat-weighted event ramp, dead stretches, variety and how a button-masher, a sloppy and a clumsy player fare; `--listing 6`: a landscape beat by beat) |
 | `node tools/audio-render.mjs` | Renders every song and effect offline and reports loudness, seams and mix margins |
 | `node tests/e2e/*.mjs` | Real Chromium (Playwright) checks of layout, input, rendering, audio lifecycle and the full game (run them one at a time) |
 | `node tests/e2e/game-spec.mjs` | Every requirement ID of SPEC.md (VIEW-1 ... AUDIO-2) as a named check, plus the traceability table in its header |
@@ -80,6 +80,12 @@ SPEC.md DESIGN.md     the original requirements and the engineering contract
 
 The world is a pure function of `(journeySeed, circuit)`, so a save is just a seed plus the last flag. The fixed
 step makes the simulation reproducible, which is how the test bot proves every jump is possible.
+
+The generator paces each landscape to a number of *threat-weighted* required events a minute (about 5 in Meadow rising slowly
+to about 11 at the Summit: a moth counts only as much as it can really hurt a Mama who never jumps), then guards against dead
+stretches by carving a small hop into any wait over about 18 s. Spikes are narrow (the art is much bigger than the hitbox), walls
+that stop Mama dead are rare, and circuits after the second are not harder than the second. DESIGN.md section 4 has the details
+and tests/felt.mjs measures the result from the finished geometry.
 
 ## GitHub Pages
 

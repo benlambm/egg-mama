@@ -12,11 +12,12 @@
  * ground since then is recovery room), `stationLen` and the beat log (`beatLog` / `beatX`, rolled back with everything else).
  */
 import { T } from '../tuning.mjs';
-import { C, flightTime, heightAt, trainFeasible, jumpWindow, spikeWindow, MAX_RISE } from './phys.mjs';
+import { C, flightTime, heightAt, trainFeasible, jumpWindow, spikeWindow, flyerThreat, SPRING_THREAT, MAX_RISE } from './phys.mjs';
 
 export const Y0 = T.groundY;
 const rd = Math.round;
 const r1 = (n) => Math.round(n * 10) / 10;
+const clamp01 = (v) => Math.min(1, Math.max(0, v));
 
 export class Builder {
   constructor(rand, { circuit = 1 } = {}) {
@@ -33,13 +34,15 @@ export class Builder {
     this.iceMode = false;          // Frostline: every platform built while this is on is slippery
     this.joinFlagX = Infinity;     // where the next landscape's opening flag will be (acts look ahead to keep flags <= 35 s apart)   // main-route distance since the last gold / shield / magnet
     this.stats = { train: 0 };
-    this.events = 0;               // required events built so far (hops, lifts, movers, walkers, flyers, spikes): the pacing controller's books
+    this.events = 0;               // THREAT-WEIGHTED required events built so far (hops, lifts, movers, walkers, flyers, spikes; see eventsSince): the pacing controller's books
     this.stationLen = 0;           // total length of flag stations so far (safe ground that is not counted toward pacing)
     this.beatLog = [];             // names of the beats built, in order (acts record their slice; the variety tests read it)
     this.beatX = [];               // where each of them starts (u), parallel to beatLog
     this.logStart = 0;             // where this landscape's beats begin in beatLog
-    this.evFirst = Infinity; this.evLast = -Infinity;   // see eventsSince()
+    this.evFirst = Infinity; this.evLast = -Infinity; this.evRaw = 0; this.evXs = [];   // see eventsSince()
     this.lastEventX = -1e9;        // the end of the last required event built (the flat ground since then counts as recovery room)
+    this.lastEvStart = -1e9;       // where the last required event starts, and how many events (each < 330 u after the one before) the cluster it ends has: chains are capped across beats
+    this.tailChain = 0;
     this.helped = new Set();       // landscapes whose first hazard already got its little help (a golden egg, a shield)
     this.rich = {};                // spec -> { ev, len }: how many events per length each spec has delivered so far (learned as the world is built)
   }
@@ -49,37 +52,67 @@ export class Builder {
     return { p: this.plats.length, k: this.picks.length, e: this.enemies.length, h: this.hazards.length, s: this.springs.length,
       c: this.cps.length, q: this.quiet.length, f: this.firsts.length, seen: new Set(this.seen), cur: this.cur,
       curW: this.cur ? this.cur.w : 0, x: this.x, y: this.y, lg: this.lastGold, ls: this.lastShield, lm: this.lastMagnet, sg: this.sawGap,
-      ev: this.events, sl: this.stationLen, bl: this.beatLog.length, le: this.lastEventX };
+      ev: this.events, sl: this.stationLen, bl: this.beatLog.length, le: this.lastEventX, lst: this.lastEvStart, tc: this.tailChain };
   }
   rollback(m) {
     this.plats.length = m.p; this.picks.length = m.k; this.enemies.length = m.e; this.hazards.length = m.h;
     this.springs.length = m.s; this.cps.length = m.c; this.quiet.length = m.q; this.firsts.length = m.f;
     this.seen = m.seen; this.cur = m.cur; if (m.cur) m.cur.w = m.curW; this.x = m.x; this.y = m.y; this.bad = null; this.lastGold = m.lg; this.lastShield = m.ls; this.lastMagnet = m.lm; this.sawGap = m.sg;
-    this.lastEventX = m.le; this.events = m.ev; this.stationLen = m.sl; this.beatLog.length = m.bl; this.beatX.length = m.bl;
+    this.lastEventX = m.le; this.lastEvStart = m.lst; this.tailChain = m.tc; this.events = m.ev; this.stationLen = m.sl; this.beatLog.length = m.bl; this.beatX.length = m.bl;
   }
 
   /**
-   * How many REQUIRED events the geometry built since mark `m` asks of her: hops (a gap, or a wall higher than she steps
-   * onto) between static main-route platforms, a lift or mover (a jump on and a jump off), walkers, flyers, spikes.
-   * The pacing controller books these as it goes; tests/felt.mjs counts the same kind of thing from the finished level.
+   * How much the geometry built since mark `m` asks of her, in THREAT-WEIGHTED required events: a hop (a gap, or a wall higher than
+   * she steps onto) between static main-route platforms, a lift or mover (a jump on and a jump off), a walker, a static spike
+   * count 1 each; a flyer counts the share of the time a Mama who never jumps would be hit by it (a high moth she passes under 0,
+   * a low swooper ~0.35: flyerThreat), a cycling spike its share of the time it is up, and a spring that carries a gap SPRING_THREAT
+   * (she rolls on and flies). The pacing controller books these as it goes; tests/felt.mjs weighs the same things from the finished level.
+   * Also sets `evRaw` (how many events there are, unweighted: the dead-stretch bookkeeping counts a moth as something to do), and
+   * evFirst / evLast: where the first / last of them sit (u), and evXs: the x of every one (the chain check reads them).
    */
   eventsSince(m) {
-    let n = this.enemies.length - m.e + this.hazards.length - m.h;
+    let n = 0, raw = this.enemies.length - m.e + this.hazards.length - m.h;
     let first = Infinity, last = -Infinity;
-    for (let k = m.e; k < this.enemies.length; k++) { const e = this.enemies[k]; const x = e.kind === 'walker' ? e.x0 : e.cx - e.ax; first = Math.min(first, x); last = Math.max(last, e.kind === 'walker' ? e.x1 : e.cx + e.ax); }
-    for (let k = m.h; k < this.hazards.length; k++) { first = Math.min(first, this.hazards[k].x); last = Math.max(last, this.hazards[k].x + this.hazards[k].w); }
+    const xs = this.evXs; xs.length = 0;
+    for (let k = m.e; k < this.enemies.length; k++) {
+      const e = this.enemies[k];
+      first = Math.min(first, e.kind === 'walker' ? e.x0 : e.cx - e.ax); last = Math.max(last, e.kind === 'walker' ? e.x1 : e.cx + e.ax);
+      xs.push(e.kind === 'walker' ? e.x0 : e.cx - e.ax);
+      if (e.kind === 'walker') n += 1;
+      else { const gy = this.groundUnder(e.cx, m.p); n += flyerThreat(e.ax, e.ay, gy - e.cy, e.period); }
+    }
+    for (let k = m.h; k < this.hazards.length; k++) {
+      const h = this.hazards[k];
+      first = Math.min(first, h.x); last = Math.max(last, h.x + h.w); xs.push(h.x);
+      n += h.cycle ? clamp01(h.cycle.up / h.cycle.period + (h.w + 26) / C / h.cycle.period) : 1;
+    }
     let prev = null;
     for (let k = m.p - 1; k >= 0 && !prev; k--) if (!this.plats[k].o) prev = this.plats[k];
     for (let k = m.p; k < this.plats.length; k++) {
       const q = this.plats[k];
       if (q.o) continue;
       const dyn = (p) => !!p.motion && !(p.kind === 'ledge' && p.motion.amp <= 10);
-      if (dyn(q)) { n += 2; first = Math.min(first, q.x); last = Math.max(last, q.x + q.w); }
-      else if (prev && !dyn(prev)) { const gap = q.x - (prev.x + prev.w); if (gap > 0 || prev.y - q.y > T.stepUp) { n++; first = Math.min(first, prev.x + prev.w); last = Math.max(last, prev.x + prev.w); } }
+      if (dyn(q)) { n += 2; raw += 2; first = Math.min(first, q.x); last = Math.max(last, q.x + q.w); xs.push(q.x, q.x + q.w); }
+      else if (prev && !dyn(prev)) {
+        const end = prev.x + prev.w, gap = q.x - end;
+        if (gap > 0 || prev.y - q.y > T.stepUp) {
+          raw++;
+          n += gap > 0 && this.springs.some((s) => s.x >= end - 70 && s.x <= end) ? SPRING_THREAT : 1;
+          first = Math.min(first, end); last = Math.max(last, end); xs.push(end);
+        }
+      }
       prev = q;
     }
-    this.evFirst = first; this.evLast = last;           // where the first / last of those events sit (u): the pacing controller schedules by them
+    this.evFirst = first; this.evLast = last; this.evRaw = raw;
     return n;
+  }
+  /** Top of the main-route ground under x (looking back from platform index `from`, a few platforms are enough). */
+  groundUnder(x, from) {
+    for (let k = Math.min(this.plats.length, from + 400) - 1; k >= Math.max(0, from - 6); k--) {
+      const p = this.plats[k];
+      if (!p.o && x >= p.x && x <= p.x + p.w) return p.y;
+    }
+    return this.y;
   }
   fail(why) { if (!this.bad) this.bad = why; }
   /** Record that the beat `name` starts at the cursor (variety bookkeeping and the beat listings of the report). */
@@ -211,6 +244,7 @@ export class Builder {
     for (const s of specs) {
       const p = this.hop(s.gap, s.w, s.dy ?? 0, { kind: s.kind, ice: s.ice ?? start.ice ?? false, opt: s.opt, h: s.h });
       made.push(p); list.push(stat(p));
+      if (s.gap === 0 && (s.dy ?? 0) < -T.stepUp && !s.opt) this.tag('wall', p.x);          // a wall: she stops dead against it until a swipe (the first one of a journey gets a caption)
     }
     const res = trainFeasible(list, { minSecs: o.minSecs ?? Math.max(T.minWindow, 0.2) });
     this.stats.train++;

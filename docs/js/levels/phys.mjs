@@ -163,3 +163,35 @@ export function springLanding(springX, rise, speed = C) {
   const t = (T.springSpeed + Math.sqrt(disc)) / g;
   return springX - 21 + speed * t;                // she triggers when |dx| <= 21 (SPRING_W/2 + 4)
 }
+
+/* ───────────────────────── how much a hazard really threatens a Mama who never jumps ───────────────────────── */
+
+/** A spring that carries a gap asks nothing of her (she rolls on and flies) but she has to watch where she lands. */
+export const SPRING_THREAT = 0.25;
+
+const THREAT_CACHE = new Map();
+/**
+ * The share of game-clock phases at which a Mama who NEVER jumps, rolling through a flyer's zone at cruise, is hit by it (0..1).
+ * `rise` = how far above her feet the flyer's centre hangs. A high moth she rolls under: ~0; a low swooper: 0.25-0.45. The
+ * pacing controller counts a flyer as this much of a required event (the planner bot makes about that many jumps for it); tests/felt.mjs
+ * measures the same thing independently (and the tests compare both with an idle Mama in the real sim). Coarse (24 phases) and memoised.
+ */
+export function flyerThreat(ax, ay, rise, period) {
+  const key = `${Math.round(ax)}|${Math.round(ay)}|${Math.round(rise)}|${Math.round(period * 10)}`;
+  let v = THREAT_CACHE.get(key);
+  if (v !== undefined) return v;
+  const half = T.mamaHalfW + 30 * 0.42;                       // the sim's overlap rule: |dx| < mamaHalfW + 0.42 * flyer width
+  const x0 = -ax - 45, dur = (2 * ax + 90) / C, N = 24, dt = 1 / 30;
+  let hits = 0;
+  for (let k = 0; k < N; k++) {
+    const t0 = (k / N) * period;
+    for (let t = 0; t <= dur; t += dt) {
+      const a = (2 * Math.PI * (t0 + t)) / period;
+      const fx = ax * Math.sin(a), fy = -rise + ay * Math.cos(a);        // flyer centre relative to (cx, her feet)
+      if (Math.abs(x0 + C * t - fx) <= half && !(0 < fy - 12 || -T.mamaH > fy + 12)) { hits++; break; }
+    }
+  }
+  v = hits / N;
+  THREAT_CACHE.set(key, v);
+  return v;
+}

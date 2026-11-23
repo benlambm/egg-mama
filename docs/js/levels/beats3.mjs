@@ -4,7 +4,7 @@
 import { clamp } from '../tuning.mjs';
 import { Y0 } from './builder.mjs';
 import { ease } from './params.mjs';
-import { def, settle, goldMain } from './beats.mjs';
+import { def, settle, goldMain, riseGap } from './beats.mjs';
 
 const rd = Math.round;
 
@@ -35,7 +35,7 @@ def('hillTop', { needs: 'step', hz: false }, (B, c) => {
   for (let i = 0; i < steps; i++) {
     const h = rd(clamp(24 + 10 * ease(c.d) + c.rand.range(0, 12), 24, 40));
     hs.push(h);
-    specs.push({ gap: c.d > 2 && c.rand.chance(clamp(0.2 + 0.1 * c.d, 0.4, 1)) ? rd(c.rand.range(30, 40)) : 0, w: rd(c.rand.range(150, 190)), dy: -h, gold: false });   // a wall, or (later) a real gap
+    specs.push({ gap: riseGap(c), w: rd(c.rand.range(150, 190)), dy: -h, gold: false });   // a small hop up (a wall only now and then, later on)
   }
   B.train(specs);
   if (B.bad) return;

@@ -8,7 +8,7 @@
  * (phys.mjs windows, trainFeasible) AND verified in tests by the planner bot at many difficulties and game-clock phases.
  * rest() is the recovery ground between beats: its length is set by the pacing controller (acts.mjs), a long one may carry a
  * ledge to climb (upperOverlay: no extra length), and the last 280 u before whatever comes next is always plain and level.
- * Spikes: width 13-20 u (takeoff window >= 0.31 s), >= 190 u of room after a landing (>= 250 u in the first two spike landscapes).
+ * Spikes: width 7-8 u (a takeoff window of 0.43-0.44 s in the sim, against 0.45-0.57 s for the median gap hop; the art is drawn much bigger than the hitbox on purpose), >= 190 u of room after a landing (>= 250 u in the first two spike landscapes).
  */
 import { T, clamp } from '../tuning.mjs';
 import { P, ease, chainMax } from './params.mjs';
@@ -21,13 +21,28 @@ export const def = (name, meta, fn) => { BEATS[name] = { name, hz: true, ...meta
 
 /* ───────────────────────── helpers ───────────────────────── */
 
-export const gapW = (c, extra = 0) => rd(clamp(P.gap(c.d) + extra + c.rand.range(-3, 3) * clamp(c.d / 4, 0.25, 1), 22, T.maxGapHard - 2));   // the first minutes barely vary
+export const gapW = (c, extra = 0) => {
+  // The first minutes vary a little, later ones more; and now and then a span that is clearly different from its neighbours, so
+  // a landscape does not read as the same hop again: early on LONGER (+3.5 .. +9 u, less and less as the gaps grow), later SHORTER
+  // (-3.5 .. -8 u): the widest gap of a given difficulty never grows (every required hop keeps its measured window of >= 0.30 s).
+  const d = c.d;
+  const odd = c.rand.chance(0.4) ? (d < 7 ? c.rand.range(3.5, 9 - 5 * clamp(d / 7, 0, 1)) : -c.rand.range(3.5, 8)) : 0;
+  return rd(clamp(P.gap(d) + extra + odd + c.rand.range(-3, 3) * clamp(d / 4, 0.25, 1), 22, T.maxGapHard - 2));
+};
 export const landW = (c) => rd(clamp(P.landing(c.d) + c.rand.range(-24, 24), T.minLanding + 14, 300));
 export const islW = (c) => rd(clamp(P.island(c.d) + c.rand.range(-12, 14), T.minLanding + 6, 230));
 export const ledgeW = (c) => rd(clamp(P.ledge(c.d) + c.rand.range(-10, 12), T.minLanding, 220));
 /** A chain of `n` hops, shortened when the act's event quota is nearly used (c.evLeft: set by the pacing controller). `extra` = hops beyond the n platforms (the final landing). */
 export const capN = (c, n, lo = 1, extra = 1) => (Number.isFinite(c.evLeft) ? Math.max(lo, Math.min(n, Math.round(c.evLeft) - extra)) : n);
 export const dyJit = (c, m) => rd(c.rand.range(-m, m));
+/**
+ * The gap in front of a landing that is HIGHER than the ground she rolls on. A zero-gap WALL makes her stop dead against it and wait
+ * for a swipe, which a small child may read as "it is broken" in a game whose premise is that Mama always rolls (and which a masher of
+ * the jump button sails through, a real hop she has to time). So it is a small hop most of the time (a gap of 30-37 u in the first
+ * three landscapes, 34-44 u later) and a wall only now and then (`wallP`: about 1 in 3 in Meadow to Orchard, 3 in 20 after); the first
+ * wall of a journey gets a caption (cues.mjs: `wall`). Tiny steps (up to T.stepUp) are bumps she rolls over: those are not events.
+ */
+export const riseGap = (c, wallP = c.ch <= 1 ? 0.35 : c.ch <= 3 ? 0.3 : 0.15) => (c.rand.chance(wallP) ? 0 : rd(c.ch <= 2 ? c.rand.range(30, 37) : c.rand.range(34, 44)));
 
 /**
  * Flat ground with the right amount of recovery room, plus the occasional pickup. Used between beats. The run is
@@ -155,7 +170,7 @@ def('gapChain', { needs: 'gap' }, (B, c) => {
 def('stepUp', { needs: 'step' }, (B, c) => {
   B.tag('step', B.x);
   const h = rd(clamp(24 + 26 * ease(c.d) + c.rand.range(-4, 12), 22, 64));
-  const gap = c.d > 2 && c.rand.chance(clamp(0.2 + 0.1 * c.d, 0.4, 1)) ? rd(c.rand.range(30, 42)) : 0;   // a wall, or (later) a real gap: never one narrower than her body
+  const gap = riseGap(c);                              // a small hop onto the higher ground (almost never a wall: she would stop dead)
   B.train([{ gap, w: rd(c.rand.range(200, 300)), dy: -h }]);
   if (B.bad) return;
   B.runEggs(B.cur.x + 30, B.x, B.y, 'line');
@@ -170,7 +185,7 @@ def('stairs', { needs: 'step' }, (B, c) => {
   const n = c.k < 0.5 ? 2 : 3;
   const specs = [];
   const h = [];
-  for (let i = 0; i < n; i++) { const s = rd(clamp(22 + 14 * ease(c.d) + c.rand.range(0, 16), 22, Math.floor(110 / n))); h.push(s); specs.push({ gap: c.d > 2 && c.rand.chance(clamp(0.2 + 0.1 * c.d, 0.4, 1)) ? rd(c.rand.range(30, 40)) : 0, w: rd(c.rand.range(150, 210)), dy: -s, gold: i === n - 1 && c.rand.chance(0.3) }); }
+  for (let i = 0; i < n; i++) { const s = rd(clamp(22 + 14 * ease(c.d) + c.rand.range(0, 16), 22, Math.floor(110 / n))); h.push(s); specs.push({ gap: riseGap(c), w: rd(c.rand.range(150, 210)), dy: -s, gold: i === n - 1 && c.rand.chance(0.3) }); }
   B.train(specs);
   if (B.bad) return;
   for (let i = n - 1; i >= 0; i--) B.hop(0, rd(c.rand.range(150, 210)), h[i]);
@@ -223,7 +238,9 @@ def('upper', { needs: 'upper', hz: false }, (B, c) => {
 /* ───────────────────────── walkers ───────────────────────── */
 
 export function walkerEncounter(B, c, { lead = 130, tail = 170, patrolMul = 1, speedMul = 1 } = {}) {
-  const patrol = rd(Math.max(96, P.walkerPatrol(c.d) * patrolMul + c.rand.range(-8, 8)));
+  // now and then a short patrol (~100-140 u) instead of the long one: the snails do not all read the same
+  const shorter = patrolMul >= 1 && c.role !== 'teach' && c.rand.chance(0.35) ? c.rand.range(0.62, 0.86) : 1;       // (never in the teaching act: shorter is harder)
+  const patrol = rd(Math.max(96, P.walkerPatrol(c.d) * patrolMul * shorter + c.rand.range(-8, 8)));
   const speed = clamp(P.walkerSpeed(c.d) * speedMul + c.rand.range(-3, 3), 14, 52);
   const x0 = B.x;
   B.run(lead + patrol + tail, 'none');
@@ -298,7 +315,7 @@ export function spikeHop(B, c, w, cycle = null) {
   B.spikeArc(h, { n: 4 });
   return h;
 }
-export const spikeW = (c) => rd(clamp(P.spikeW(c.d) + c.rand.range(-1, 1), 13, 20));   // takeoff window >= 0.31 s at any difficulty
+export const spikeW = (c) => rd(clamp(P.spikeW(c.d), 5, 10));   // 7 u at the first spikes, 8-9 u later: a takeoff window of 0.43-0.46 s at any difficulty (no jitter: one unit is a visible step of difficulty)
 
 def('spike1', { needs: 'spikes' }, (B, c) => {
   B.run(30, 'none');
@@ -307,7 +324,7 @@ def('spike1', { needs: 'spikes' }, (B, c) => {
 });
 
 def('spikeRow', { needs: 'spikes' }, (B, c) => {
-  const n = c.k < 0.5 ? 2 : 3;
+  const n = c.d > 10 ? 3 : 2;                       // two thorns with room between; three only late in the journey (a late jump over the first leaves less room for the next)
   for (let i = 0; i < n; i++) {
     B.run(i ? rd(c.rand.range(150, 190)) : 20, 'line');
     spikeHop(B, c, spikeW(c));
@@ -465,9 +482,10 @@ def('crumbleBridge', { needs: 'crumble' }, (B, c) => {
  */
 def('logs', { needs: 'logs' }, (B, c) => {
   B.tag('logs', B.x);
-  const n = capN(c, Math.min(c.k < 0.35 ? 3 : c.k < 0.7 ? 4 : 6, Math.max(2, chainMax(c.d) - 1)));
+  // how many logs: not always the same three (2, 3, 4 or 5 by how far into the act, with a coin toss either way)
+  const n = capN(c, clamp(Math.min(c.k < 0.35 ? 3 : c.k < 0.7 ? 4 : 6, Math.max(2, chainMax(c.d) - 1)) + c.rand.int(-1, 1), 2, 5));
   const specs = [];
-  for (let i = 0; i < n; i++) specs.push({ kind: 'ledge', gap: gapW(c, -10), w: ledgeW(c), dy: dyJit(c, 16), gold: i === 2 && c.rand.chance(0.25) });
+  for (let i = 0; i < n; i++) specs.push({ kind: 'ledge', gap: gapW(c, -10), w: ledgeW(c) + (c.rand.chance(0.3) ? c.rand.int(14, 40) : 0), dy: dyJit(c, 16), gold: i === 2 && c.rand.chance(0.25) });
   specs.push({ kind: 'ground', gap: gapW(c, -7), w: landW(c), dy: 0 });
   fixHeights(B, specs);
   const bob = c.ch === 2;
@@ -483,7 +501,7 @@ def('logs', { needs: 'logs' }, (B, c) => {
 /** Broken spans: a deck of big and small pieces; the small ones need a second landing planned. */
 def('bridge', { needs: 'bridge' }, (B, c) => {
   B.tag('bridge', B.x);
-  const n = capN(c, Math.min(c.k < 0.35 ? 3 : c.k < 0.7 ? 4 : 5, Math.max(2, chainMax(c.d) - 1)));
+  const n = capN(c, Math.max(2, Math.min(c.k < 0.35 ? 3 : c.k < 0.7 ? 4 : 5, Math.max(2, chainMax(c.d) - 1)) - c.rand.int(0, 1)));
   const specs = [];
   let big = true;
   for (let i = 0; i < n; i++) {

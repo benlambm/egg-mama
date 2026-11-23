@@ -13,14 +13,19 @@
  * The FELT report (what a child feels from the BUILT geometry; tests/felt.mjs never looks at the generator's curves):
  *
  *   node tools/level-report.mjs --felt [--journeys 20] [--circuits 1,2]
- *        per landscape, averaged over the journeys x circuits: required events a minute (whole landscape, and the live acts
- *        without breathers and flag stations), chains (mean size, share in chains of 3+), takeoff windows (min / median),
- *        simultaneous demands, seconds from a flag to its hardest event, the longest wait for a required event (mean of the
- *        maxima, worst) and its p90, the longest quiet stretch counting optional activity, the biggest beat share, the
- *        number of distinct beat types; plus the Spearman of the density ramp and the lowest landscape-to-landscape ratio.
+ *        per landscape, averaged over the journeys x circuits: required events a minute (raw, and THREAT-WEIGHTED: a moth counts
+ *        the share of the time a Mama who never jumps is hit by it, a spring that carries a gap 0.25), the same over the live acts
+ *        without breathers and flag stations, chains (mean size, share in chains of 3+), takeoff windows (min / median, spikes),
+ *        simultaneous demands, seconds from a flag to its hardest event, the longest wait for a required event (mean of the maxima,
+ *        worst), the share of runs waiting over 26 s, its p90, the longest quiet stretch counting optional activity, the biggest beat
+ *        share and geometry-fingerprint share, the share of plain hops, walls (zero-gap rises she stops dead against), the number of
+ *        distinct beat types; plus the Spearman of every density ramp and the lowest landscape-to-landscape ratio.
  *   node tools/level-report.mjs --felt --bots [--journeys 3]
- *        adds the clear rates (per landscape, flag to flag, no flock) of a button-mashing toddler and of a calm but sloppy
- *        planner bot (80 ms of unnoticed latency, +-80 ms jitter)
+ *        adds the clear rates (per landscape, flag to flag, no flock) of a button-mashing toddler, of a calm but sloppy planner bot
+ *        (80 ms of unnoticed latency, +-80 ms jitter) and of a clumsy small child (120 ms, +-120 ms)
+ *   node tools/level-report.mjs --bot
+ *        plays every segment with the jump-only planner bot: measured clean times, any failure, and the planner's JUMPS a minute
+ *        per landscape (what a calm player really does: the ramp the threat weights are calibrated to)
  *   node tools/level-report.mjs --listing 4 [--journey N] [--circuit C]
  *        the beat-by-beat listing of landscape 4 (1-based): every act, every beat with its start time, its required events,
  *        its optional activity and the flags, so a designer can read the landscape like a score
@@ -30,7 +35,8 @@
  * difficulty the generator asked for next to the demand measured from the geometry.
  */
 import { T, jumpDistance } from '../docs/js/tuning.mjs';
-import { CHAPTERS, difficulty, paceBand } from '../docs/js/chapters.mjs';
+import { CHAPTERS, paceBand } from '../docs/js/chapters.mjs';
+import { levelDifficulty as difficulty } from '../docs/js/levels/params.mjs';
 import { generateLevel, levelSeed } from '../docs/js/levelgen.mjs';
 import { measureDemand, eventsIn } from '../docs/js/levels/demand.mjs';
 import { jumpWindow } from '../docs/js/levels/phys.mjs';
@@ -55,9 +61,10 @@ if (opt('felt', false)) {
     const genMs = (performance.now() - t0) / J;
     const sum = feltSummary(levels);
     console.log(`\nFELT  circuit ${cir}  ${J} journeys  (generation ${genMs.toFixed(0)} ms each)`);
-    console.log('#  landscape        ev/min  live/min  chain  ch3%  winMin winMed  combo%  flag>hard  gapMax(mean/worst)  gapP90  optGap(worst)  topBeat%  distinct');
-    sum.lands.forEach((l, i) => console.log([String(i + 1).padStart(2), NAMES[i].padEnd(15), fmt(l.density, 2), fmt(l.liveDensity, 2, 8), fmt(l.chainMean, 2), fmt(100 * l.chain3, 0, 5), fmt(l.worst.winMin, 2), fmt(l.winMed, 2), fmt(100 * (l.comboShare || 0), 0, 6), fmt(l.flagToHardest, 1, 8), `${fmt(l.gapMax, 1)}/${fmt(l.worst.gapMax, 1)}`.padStart(18), fmt(l.gapP90, 1), fmt(l.worst.optGapMax, 1, 12), fmt(100 * l.worst.topShare, 0, 8), String(l.minDistinct).padStart(6)].join('  ')));
-    console.log(`Spearman(density, landscape) = ${sum.spearman.toFixed(3)}; lowest landscape / previous = ${sum.minRatio.toFixed(2)}; Meadow ${sum.density[0].toFixed(1)} -> Summit ${sum.density[12].toFixed(1)} required events a minute`);
+    console.log('#  landscape        ev/min  w/min  live  wlive  chain  ch3%  winMin winMed spkMed  combo%  flag>hard  gapMax(mean/worst)  >26s%  gapP90  optGap(worst)  topBeat%  fp%  hop%  walls  distinct');
+    sum.lands.forEach((l, i) => console.log([String(i + 1).padStart(2), NAMES[i].padEnd(15), fmt(l.density, 2), fmt(l.wDensity, 2, 6), fmt(l.liveDensity, 1, 5), fmt(l.wLiveDensity, 1, 6), fmt(l.chainMean, 2), fmt(100 * l.chain3, 0, 5), fmt(l.worst.winMin, 2), fmt(l.winMed, 2), fmt(l.spikeMed, 2, 6), fmt(100 * (l.comboShare || 0), 0, 6), fmt(l.flagToHardest, 1, 8), `${fmt(l.gapMax, 1)}/${fmt(l.worst.gapMax, 1)}`.padStart(18), fmt(100 * l.over26, 0, 5), fmt(l.gapP90, 1), fmt(l.worst.optGapMax, 1, 12), fmt(100 * l.worst.topShare, 0, 8), fmt(100 * l.fpShare, 0, 4), fmt(100 * l.hopShare, 0, 4), fmt(l.steps, 1, 5), String(l.minDistinct).padStart(6)].join('  ')));
+    for (const [k, r] of Object.entries(sum.ramps)) console.log(`  ramp ${k.padEnd(18)} Spearman ${r.spearman.toFixed(3)}  lowest landscape / previous ${r.minRatio.toFixed(2)}   ${r.values.map((v) => v.toFixed(1)).join(' ')}`);
+    console.log(`  Meadow ${sum.ramps.wDensity.values[0].toFixed(1)} -> Summit ${sum.ramps.wDensity.values[12].toFixed(1)} threat-weighted required events a minute (raw ${sum.density[0].toFixed(1)} -> ${sum.density[12].toFixed(1)})`);
     const top = sum.lands.map((l) => Object.entries(l.tally).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([n, v]) => `${n} ${(v / l.runs).toFixed(1)}`).join(', '));
     console.log('most common beats per landscape (a landscape has about 19-29 beats):');
     top.forEach((t, i) => console.log(`  ${NAMES[i].padEnd(15)} ${t}`));
@@ -66,14 +73,14 @@ if (opt('felt', false)) {
   if (opt('bots', false)) {
     const { clearRates } = await import('../tests/bot.mjs');
     const BJ = Math.min(J, Number(opt('botjourneys', 3)));
-    for (const kind of ['mash', 'sloppy']) {
+    for (const kind of ['mash', 'sloppy', 'clumsy']) {
       const ok = new Array(13).fill(0), runs = new Array(13).fill(0);
       const t0 = performance.now();
       for (const cir of circuits) for (let j = 0; j < BJ; j++) {
         const r = clearRates(generateLevel({ circuit: cir, seed: levelSeed(900 + j * 7919, cir) }), { kind, trials: kind === 'mash' ? 6 : 1, seed: 11 + j });
         r.ok.forEach((v, i) => { ok[i] += v; runs[i] += r.runs[i]; });
       }
-      console.log(`\n${kind === 'mash' ? 'button-mashing toddler' : 'calm but sloppy bot (80 ms latency, +-80 ms jitter)'}: share of flag-to-flag segments cleared with no flock (${BJ} journeys x circuits ${circuits.join(',')}, ${((performance.now() - t0) / 1000).toFixed(0)} s)`);
+      console.log(`\n${kind === 'mash' ? 'button-mashing toddler' : kind === 'sloppy' ? 'calm but sloppy bot (80 ms latency, +-80 ms jitter)' : 'clumsy small child (120 ms latency, +-120 ms jitter)'}: share of flag-to-flag segments cleared with no flock (${BJ} journeys x circuits ${circuits.join(',')}, ${((performance.now() - t0) / 1000).toFixed(0)} s)`);
       console.log('  ' + ok.map((v, i) => `${NAMES[i].split(' ')[0]} ${(100 * v / runs[i]).toFixed(0)}%`).join('  '));
       console.log(`  overall ${(100 * ok.reduce((a, b) => a + b, 0) / runs.reduce((a, b) => a + b, 0)).toFixed(0)}%`);
     }
@@ -164,14 +171,15 @@ let bot = null;
 if (opt('bot', false)) {
   const { playLevel, segmentsOf } = await import('../tests/bot.mjs');
   const segs = segmentsOf(level);
-  const per = new Array(13).fill(0), fails = [];
+  const per = new Array(13).fill(0), fails = [], jumps = new Array(13).fill(0), secs = new Array(13).fill(0);
   for (const s of segs) {
     const r = playLevel(level, { startCheckpoint: s.from, stopAtCheckpoint: s.to ?? undefined, allowSteer: false, tOffset: s.from * 1.37 % 11 });
     if (!r.ok) fails.push({ segment: s.from, landscape: s.ch + 1, x: Math.round(r.x), reason: r.reason });
     per[s.ch] += s.to === null ? (level.beacon.x - s.x0) / C : r.clean;
+    if (s.to !== null) { jumps[s.ch] += r.jumps; secs[s.ch] += (s.x1 - s.x0) / C; }
   }
-  bot = { segments: segs.length, fails, clean: per.map((v) => +v.toFixed(1)), totalMin: +(per.reduce((s, v) => s + v, 0) / 60).toFixed(1) };
-  rows.forEach((r, i) => { r.botCleanS = bot.clean[i]; });
+  bot = { segments: segs.length, fails, clean: per.map((v) => +v.toFixed(1)), totalMin: +(per.reduce((s, v) => s + v, 0) / 60).toFixed(1), jumpsPerMin: jumps.map((j, i) => +(j / (secs[i] / 60)).toFixed(1)) };
+  rows.forEach((r, i) => { r.botCleanS = bot.clean[i]; r.botJumpsMin = bot.jumpsPerMin[i]; });
 }
 
 if (opt('json', false)) {
@@ -187,11 +195,11 @@ if (!opt('acts', false)) {
   console.log(`Egg Mama world  circuit ${circuit}  seed ${seed}  generated in ${genMs.toFixed(0)} ms  ${level.platforms.length} platforms  ${level.pickups.length} pickups  ${level.enemies.length} enemies  ${level.hazards.length} spikes  ${level.springs.length} springs  ${level.checkpoints.length} flags  endX ${level.endX}`);
   console.log(`default cruise ${C} u/s, flat jump ${jumpDistance().toFixed(0)} u; every landscape is paced by chapters.seconds (clean time = distance / cruise, jump-only)\n`);
   const head = ['#', 'landscape', 'len u', 'clean s', '(band)', 'acts', 'flags', 'jumps', 'gaps', 'walk', 'fly', 'spk', 'spr', 'lift', 'mov', 'crum', 'gold', 'eggs', 'shld', 'magn', 'd0', 'dmid', 'd1', 'demand', 'quiet%'];
-  if (bot) head.splice(5, 0, 'bot s');
+  if (bot) head.splice(5, 0, 'bot s', 'jumps/min');
   console.log(head.join('  '));
   for (const r of rows) {
     const cells = [pad(r.landscape, 1), pad(r.name, 15, true), pad(r.lengthU, 6), pad(r.cleanS, 7), pad(`${r.band[0]}-${r.band[1]}`, 9, true)];
-    if (bot) cells.push(pad(r.botCleanS, 6));
+    if (bot) cells.push(pad(r.botCleanS, 6), pad(r.botJumpsMin, 9));
     cells.push(pad(r.acts, 4), pad(r.flags, 5), pad(r.jumps, 5), pad(r.gaps, 4), pad(r.walkers, 4), pad(r.flyers, 3), pad(r.spikes, 3), pad(r.springs, 3), pad(r.lifts, 4), pad(r.movers, 3), pad(r.crumbles, 4), pad(r.golds, 4), pad(r.eggs, 5), pad(r.shields, 4), pad(r.magnets, 4), pad(r.d0.toFixed(1), 4), pad(r.dMid.toFixed(1), 4), pad(r.d1.toFixed(1), 4), pad(r.demand, 6), pad(r.quietPct, 6));
     console.log(cells.join('  '));
   }

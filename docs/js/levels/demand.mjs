@@ -73,7 +73,7 @@ export function eventsIn(level, x0, x1) {
   }
   for (const h of level.hazards) {
     if (h.x < x0 || h.x >= x1) continue;
-    ev.push({ x: h.x, h: unease(clamp((h.w - 15) / 7, 0, 1)) + (h.cycle ? 0.8 : 0), kind: 'spikes' });
+    ev.push({ x: h.x, h: unease(clamp((h.w - 6) / 3.4, 0, 1)) + (h.cycle ? 0.8 : 0), kind: 'spikes' });      // width 6 u (easiest) .. 9.4 u (params.spikeW)
   }
   ev.sort((a, b) => a.x - b.x);
   return ev;

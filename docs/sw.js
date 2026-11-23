@@ -17,7 +17,7 @@
 // Every copy this game keeps has a name starting with PREFIX. Other games on the same web address
 // (a GitHub Pages user site hosts many) keep copies of their own under other names.
 const PREFIX = 'egg-mama-';
-const VERSION = PREFIX + 'v-d44f1ab291';
+const VERSION = PREFIX + 'v-cebca6782c';
 
 const FILES = [
   './',
@@ -43,6 +43,7 @@ const FILES = [
   './js/levels/builder.mjs',
   './js/levels/cues.mjs',
   './js/levels/demand.mjs',
+  './js/levels/densify.mjs',
   './js/levels/params.mjs',
   './js/levels/phys.mjs',
   './js/loop.mjs',
