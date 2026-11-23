@@ -48,7 +48,9 @@ Add `?debug` to the URL to get `window.__egg` (teleport, fast-forward, force the
 | `FULL=1 node --test tests/levels.test.mjs` | A planner bot plays every flag-to-flag segment of three circuits (about 12 minutes) |
 | `node tools/level-report.mjs` | Per-landscape length, pacing, hazards and difficulty ramp of a generated circuit |
 | `node tools/audio-render.mjs` | Renders every song and effect offline and reports loudness, seams and mix margins |
-| `node tests/e2e/*.mjs` | Real Chromium (Playwright) checks of layout, input, rendering, audio lifecycle and the full game |
+| `node tests/e2e/*.mjs` | Real Chromium (Playwright) checks of layout, input, rendering, audio lifecycle and the full game (run them one at a time) |
+| `node tests/e2e/game-spec.mjs` | Every requirement ID of SPEC.md (VIEW-1 ... AUDIO-2) as a named check, plus the traceability table in its header |
+| `node tests/e2e/game-attack.mjs` | Hostile input against the whole game: 24-flip rotate storms and background storms in every state, double-taps, reloads, blocked/full storage, offline play of all 13 landscapes, a service-worker update, safe-area insets, odd screen sizes, a 6x slower CPU, GitHub Pages layout checks |
 
 ### Release step
 

@@ -41,6 +41,7 @@ const FADE_MS = 240;                                           // keep in sync w
 // on). Presses on their buttons in the first moments are those leftover taps, not a choice: ignore them.
 const GUARDED = new Set(['dead', 'finish']);
 const GUARD_MS = 320;
+const DOUBLE_TAP_MS = 420, DOUBLE_TAP_PX = 56;                    // a second tap this soon and this close, on another button, after a screen change, is a double-tap
 
 /* ───────────────────────── small helpers ───────────────────────── */
 
@@ -469,6 +470,7 @@ export function createUI({ root, onAction = () => {} } = {}) {
   let journalPick = null;
   let openedAt = -1e9;                  // when the current screen came up (performance.now), for the GUARD_MS rule
   let readyArmed = false;               // a finger went down on the rotate screen AFTER it said "Tap to continue"
+  let lastClick = { t: -1e9, x: 0, y: 0, action: '', moved: false };   // the last accepted button press (the double-tap rule in handleClick)
   const last = {};                      // last data each screen was shown with
 
   const ctx = (name, data) => ({ name, data, last, baseData: base ? base.data : null, muted, tapToJump, canFullscreen });
@@ -583,6 +585,13 @@ export function createUI({ root, onAction = () => {} } = {}) {
     const action = btn.dataset.action;
     if (action === 'rotate-continue' && !rotateTapOk(e)) return;
     if (GUARDED.has(current) && e.detail > 0 && performance.now() - openedAt < GUARD_MS) return;   // leftover play taps (keyboard clicks, detail 0, are deliberate)
+    // The second tap of a double-tap lands on whatever the first tap just revealed: "Yes, start over" -> the title's Continue, the
+    // X of How to play -> Continue. So: when the last press CHANGED the screen, a finger that comes down again on the same spot a
+    // moment later, on a DIFFERENT action, is that double-tap and not a new choice. (Switches such as Sound change no screen and
+    // stay instantly tappable; the same action again works; the keyboard, detail 0, is exempt.)
+    const pressedAt = performance.now(), screenBefore = current;
+    if (e.detail > 0 && lastClick.moved && action !== lastClick.action && pressedAt - lastClick.t < DOUBLE_TAP_MS
+      && Math.hypot(e.clientX - lastClick.x, e.clientY - lastClick.y) < DOUBLE_TAP_PX) return;
     let payload;
     switch (action) {
       case 'sound': muted = !muted; reflect(); payload = { muted }; break;
@@ -594,6 +603,7 @@ export function createUI({ root, onAction = () => {} } = {}) {
     }
     if (btn === pauseBtn || (e.detail > 0 && action !== 'sound' && action !== 'tap-to-jump')) { try { btn.blur(); } catch { /* ignore */ } }
     onAction(action, payload);
+    if (e.detail > 0) lastClick = { t: pressedAt, x: e.clientX, y: e.clientY, action, moved: current !== screenBefore };
   }
 
   function selectTab(btn) {

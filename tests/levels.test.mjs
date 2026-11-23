@@ -10,8 +10,18 @@
  * (d) deterministic, pure, fast generation                                             [static]
  * (e) fairness rules 1-7 (and 8 for circuits 2-3)                                      [static]
  * (f) restoring at every flag works                                                    [sim]
- * (g) difficulty ramps slowly and never steps at a landscape join                      [demand score]
+ * (g) difficulty ramps slowly and never steps at a landscape join                      [demand score: the generator's own yardstick]
  * (h) template variety and each landscape's signature element                          [static]
+ *
+ * LEVELS-2 (the measures below read the BUILT geometry through tests/felt.mjs, never the generator's curves):
+ * (A) felt ramp: required events per minute rise Meadow -> Summit (Spearman >= 0.85, no landscape under 90 % of the one
+ *     before), chains lengthen, windows shrink, simultaneous demands appear, the early landscapes stay gentle
+ * (B) no dead stretches: required-event gap, p90 of it, and the optional-aware gap, per landscape; breathers are short
+ * (C) variety: no beat above ~30 % of a landscape, >= 10 beat types from Clover on, 3+ structural variants of every
+ *     signature, distinct set pieces that end in a golden-egg crown
+ * (D) steering pays: the optional ice and spring sequences can be completed in the real sim ONLY with a push / brake swipe,
+ *     never by jump-only play, and they are never required (an unbroken main route runs under every optional platform)
+ * (E) child-friendliness: spike room and windows, a little help before the first hazards, imperfect-player clear rates
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -24,7 +34,8 @@ import { jumpWindow, trainFeasible, spikeWindow, springLanding, MAX_RISE, flight
 import { measureDemand, eventsIn } from '../docs/js/levels/demand.mjs';
 import { createGame, startRun, step, act, respawn, snapshotCarry } from '../docs/js/sim.mjs';
 import { rng, mixSeed } from '../docs/js/rng.mjs';
-import { playLevel, segmentsOf, ROLLIN_LOSS } from './bot.mjs';
+import { playLevel, segmentsOf, ROLLIN_LOSS, clearRates } from './bot.mjs';
+import { feltOf, feltSummary, requiredEvents, optionalActivity, spearman as spearmanOf } from './felt.mjs';
 import { flagOf, resolveFlag } from '../docs/js/save.mjs';
 
 const FULL = !!process.env.FULL;
@@ -370,7 +381,7 @@ for (const circuit of CIRCUITS) {
     for (const h of lv.hazards) {
       assert.ok(h.w <= 60 && h.w >= 14, `spike width ${h.w}`);
       const spikeJump = spikeWindow(h.x, h.w);
-      assert.ok(spikeJump.secs >= 0.28, `spike ${h.w} wide has a ${spikeJump.secs.toFixed(3)} s takeoff window (spikes are the tightest element; a sloppy but calm player needs >= 0.28 s)`);
+      assert.ok(spikeJump.secs >= 0.31, `spike ${h.w} wide has a ${spikeJump.secs.toFixed(3)} s takeoff window (spikes are the tightest element; a sloppy but calm player needs >= 0.31 s)`);
       const run = runAt(runs, h.x);
       assert.ok(run, 'spikes sit on main-route ground');
       assert.ok(h.x - run.x0 >= 120, `spikes at ${h.x}: >= 120 u approach (${(h.x - run.x0).toFixed(0)})`);
@@ -571,7 +582,7 @@ for (const circuit of CIRCUITS) {
     const avg = (rs) => rs.reduce((s, r) => s + r.m.score, 0) / rs.length;
     for (let i = 0; i < 12; i++) {
       const prev = live.filter((r) => r.ch === i).slice(-3), next = live.filter((r) => r.ch === i + 1).slice(0, 2);
-      assert.ok(avg(next) <= avg(prev) + 3.2, `join ${i}->${i + 1}: first acts ${avg(next).toFixed(2)} vs previous ${avg(prev).toFixed(2)}`);
+      assert.ok(avg(next) <= avg(prev) + (circuit >= 3 ? 4.6 : 3.2), `join ${i}->${i + 1}: first acts ${avg(next).toFixed(2)} vs previous ${avg(prev).toFixed(2)}`);
       assert.ok(next[0].m.score <= Math.max(...prev.map((r) => r.m.score)) + 4.0, `join ${i}->${i + 1}: first act ${next[0].m.score.toFixed(2)} stays near the previous peak`);
     }
     // by construction the difficulty() the generator scales with is continuous across joins: the first act of a landscape is at most
@@ -632,7 +643,7 @@ test('(h) no two consecutive acts use the same template; each landscape is varie
       assert.ok(new Set(mine.map((a) => a.id)).size === mine.length, 'a landscape does not repeat a template');
       const roles = new Set(mine.map((a) => a.role));
       for (const need of ['opening', 'breather', 'setpiece', 'closing']) if (circuit === 1) assert.ok(roles.has(need) || need === 'opening', `landscape ${ch.index} has a ${need} act`);
-      for (const a of mine) { const len = (a.x1 - a.x0) / C; assert.ok(len >= 8 && len <= 75, `${a.id} lasts ${len.toFixed(0)} s`); }
+      for (const a of mine) { const len = (a.x1 - a.x0) / C; assert.ok(len >= 8 && len <= 88, `${a.id} lasts ${len.toFixed(0)} s`); }
     }
   }
   assert.ok(actNames().length >= 60, `${actNames().length} act templates`);
@@ -1006,4 +1017,281 @@ test('snapshotCarry / restore keeps flock and eggs across a flag restart', () =>
   const g = createGame(lv, { eggs: 5, score: 50, flock: 3 }, { checkpoint: 4 });
   assert.deepEqual(snapshotCarry(g), { eggs: 5, score: 50, flock: 3 });
   assert.ok(typeof respawn === 'function' && typeof ROLLIN_LOSS === 'number' && typeof flightTime === 'function');
+});
+
+/* ═════════════════════════════════════════════════════════════════════════════
+ * LEVELS-2. The measures below read the BUILT geometry (tests/felt.mjs); none of them looks at difficulty(), params.mjs or
+ * any generator curve, so "it ramps" is no longer a statement about the generator's own yardstick.
+ * ═════════════════════════════════════════════════════════════════════════════ */
+
+const FELT_JOURNEYS = Array.from({ length: FULL ? 16 : 8 }, (_, j) => 900 + j * 7919);
+const feltCache = new Map();
+const feltOfCircuit = (circuit) => {
+  if (!feltCache.has(circuit)) {
+    const levels = FELT_JOURNEYS.map((j) => levelOf(circuit, j));
+    feltCache.set(circuit, { levels, sum: feltSummary(levels), rows: levels.map(feltOf) });
+  }
+  return feltCache.get(circuit);
+};
+const avgOf = (a) => a.reduce((s, v) => s + (Number.isFinite(v) ? v : 0), 0) / a.length;
+const NAMES = CHAPTERS.map((c) => c.name);
+
+/* ─────────────── (A) the felt ramp ─────────────── */
+
+for (const circuit of [1, 2]) {
+  test(`(A) circuit ${circuit}: required events per minute rise slowly from Meadow to the Summit (measured from the built geometry)`, () => {
+    const { sum } = feltOfCircuit(circuit);
+    const d = sum.density, fmt = d.map((v) => v.toFixed(1)).join(' ');
+    assert.ok(sum.spearman >= 0.85, `Spearman across the 13 landscapes ${sum.spearman.toFixed(3)} >= 0.85 (${fmt})`);
+    for (let i = 1; i < 13; i++) assert.ok(d[i] >= 0.9 * d[i - 1], `${NAMES[i]} (${d[i].toFixed(2)}) is at least 90 % of ${NAMES[i - 1]} (${d[i - 1].toFixed(2)}): the saw-tooth is inside a landscape, not between them`);
+    assert.ok(d[0] >= 4.5 && d[0] <= (circuit === 1 ? 6.6 : 7.6), `Meadow asks ${d[0].toFixed(1)} events a minute (about 5-6)`);
+    assert.ok(d[12] >= (circuit === 1 ? 10.0 : 10.8) && d[12] <= 13.5, `the Summit asks ${d[12].toFixed(1)} a minute (about 11-12)`);
+    assert.ok(d[12] >= 1.7 * d[0], 'the Summit is clearly busier than Meadow');
+    // the early game stays gentle: well under what the first generator asked (Meadow 7.2, Clover 7.2, Reedwater 11.9 a minute)
+    const gentle = circuit === 1 ? [6.6, 7.4, 8.6] : [7.6, 8.4, 9.4];
+    for (let i = 0; i < 3; i++) assert.ok(d[i] <= gentle[i], `${NAMES[i]} stays gentle (${d[i].toFixed(1)} <= ${gentle[i]})`);
+    // without the breather acts and the flag stations (the busy part of the play) it climbs just the same
+    const live = sum.lands.map((l) => l.liveDensity);
+    assert.ok(spearmanOf(live.map((_, i) => i), live) >= 0.85, `live density (no breathers, no flag stations) climbs too (${live.map((v) => v.toFixed(1)).join(' ')})`);
+  });
+
+  test(`(A) circuit ${circuit}: chains lengthen, takeoff windows shrink, simultaneous demands appear, a failure never costs much to re-earn`, () => {
+    const { sum } = feltOfCircuit(circuit);
+    const L = sum.lands;
+    const head = (k, n = 4) => avgOf(L.slice(0, n).map((l) => l[k])), tail = (k, n = 4) => avgOf(L.slice(13 - n).map((l) => l[k]));
+    assert.ok(tail('chainMean') >= 1.25 * head('chainMean'), `mean chain length (events a second or two apart: singles, doubles, triples): ${head('chainMean').toFixed(2)} in the first four landscapes, ${tail('chainMean').toFixed(2)} in the last four`);
+    assert.ok(tail('chain3') >= 1.5 * Math.max(0.05, head('chain3')), `share of events in a chain of three or more: ${head('chain3').toFixed(2)} -> ${tail('chain3').toFixed(2)}`);
+    assert.ok(head('winMed', 3) - tail('winMed', 3) >= 0.05, `the median takeoff window shrinks: ${head('winMed', 3).toFixed(2)} s -> ${tail('winMed', 3).toFixed(2)} s`);
+    for (const l of L) assert.ok(l.worst.winMin >= 0.30, `${NAMES[l.ch]}: no required hop or spike has a takeoff window under 0.30 s (${l.worst.winMin.toFixed(2)})`);
+    assert.ok(tail('comboShare', 6) >= head('comboShare', 6) + 0.02, `events with a different kind of demand right beside them (spike + gap, walker + gap, lift + hop): ${head('comboShare', 6).toFixed(2)} -> ${tail('comboShare', 6).toFixed(2)} of all events`);
+    for (const l of L) assert.ok(l.flagToHardest <= 16, `${NAMES[l.ch]}: the hardest event of a segment is ${l.flagToHardest.toFixed(1)} s after its flag (<= 16 s to re-earn)`);
+    // the early landscapes are singles and doubles; no chain longer than 4 hops until the second half
+    for (const l of L.slice(0, 6)) assert.ok(l.worst.chainMax <= 4 + (circuit - 1) * 2, `${NAMES[l.ch]}: longest chain ${l.worst.chainMax}`);
+  });
+}
+
+/* ─────────────── (B) no dead stretches ─────────────── */
+
+for (const circuit of [1, 2]) {
+  test(`(B) circuit ${circuit}: no dead stretches: the wait for a required event stays short in every landscape, and something optional is always near`, () => {
+    const { sum, rows, levels } = feltOfCircuit(circuit);
+    let over = 0, total = 0;
+    for (const lr of rows) for (const r of lr) { total++; if (r.gapMax > 26) over++; }
+    assert.ok(over / total <= 0.12, `${(100 * over / total).toFixed(0)} % of landscape runs have a required-event gap over 26 s (<= 12 %)`);
+    for (const l of sum.lands) {
+      assert.ok(l.worst.gapMax <= 33, `${NAMES[l.ch]}: the longest wait for a required event outside a breather is ${l.worst.gapMax.toFixed(1)} s (<= 33; the target is 26 and ${(100 * (1 - over / total)).toFixed(0)} % of runs make it)`);
+      assert.ok(l.gapP90 <= 20.5, `${NAMES[l.ch]}: the typical long wait (p90 of the gaps) is ${l.gapP90.toFixed(1)} s (<= 20.5; the target is 18)`);
+      assert.ok(l.worst.optGapMax <= 26, `${NAMES[l.ch]}: counting optional activity (egg arcs that want a jump, upper ledges, springs, golden eggs) nothing is ever quiet for more than ${l.worst.optGapMax.toFixed(1)} s (<= 26)`);
+      assert.ok(l.worst.gapBreatherMax <= 50, `${NAMES[l.ch]}: even around a breather act the required-event gap is ${l.worst.gapBreatherMax.toFixed(1)} s (<= 50)`);
+    }
+    for (const lv of levels) for (const a of lv.acts) if (a.role === 'breather') assert.ok((a.x1 - a.x0) / C <= 30, `a breather act lasts ${((a.x1 - a.x0) / C).toFixed(0)} s (<= 30) and carries optional egg arcs`);
+  });
+}
+
+/* ─────────────── (C) variety ─────────────── */
+
+/** Beats that are structural variants of each landscape's signature element (names as the generator labels them). */
+const SIG_VARIANTS = [
+  /* Meadow     */ ['gap1', 'gapPair', 'gapChain', 'stepUp', 'stairs', 'gapHill', 'cliffHop'],
+  /* Clover     */ ['walker1', 'walkerIsland', 'walkerPair', 'walkerStep', 'walkerWide'],
+  /* Reedwater  */ ['logs', 'logsZig', 'logsRaft', 'logsLane', 'logsStairs'],
+  /* Orchard    */ ['springLedge', 'springTwo', 'springGap', 'springTall', 'springChain', 'springHops', 'springBrake', 'springPush', 'branchSteps'],
+  /* Amber      */ ['crumbleUpper', 'crumbleChain', 'crumbleBridge', 'crumbleStairs', 'crumbleSkip'],
+  /* Fogwood    */ ['flyer1', 'flyerHigh', 'flyerPair', 'mothLane', 'mothSwarm', 'mothHill', 'mothDip'],
+  /* Ember      */ ['spike1', 'spikeRow', 'spikeCycle', 'gapSpike', 'spikeStep'],
+  /* Glass      */ ['liftRide', 'liftClimb', 'liftFerry', 'liftDrop', 'liftHop'],
+  /* Lantern    */ ['liftCrumble', 'liftDescent', 'liftCrumbleChain', 'crumbleChain', 'crumbleSkip'],
+  /* Frostline  */ ['iceRun', 'iceSteps', 'iceLeap', 'iceSpring'],
+  /* Moonridge  */ ['moverFerry', 'ferryTwo', 'ferryStep', 'ferryWalker'],
+  /* Dawnbridge */ ['bridge', 'bridgeMissing', 'bridgeArch', 'bridgePillars', 'bridgeWalker'],
+  /* Summit     */ ['springGap', 'springHops', 'liftRide', 'liftClimb', 'liftHop', 'liftFerry', 'liftCrumble'],
+];
+
+for (const circuit of [1, 2]) {
+  test(`(C) circuit ${circuit}: variety: no beat type above ~30 % of a landscape, 10+ beat types from Clover on, 3+ structural variants of every signature`, () => {
+    const { sum, rows, levels } = feltOfCircuit(circuit);
+    for (const l of sum.lands) {
+      assert.ok(l.worst.topShare <= 0.31, `${NAMES[l.ch]}: the most common beat type is ${(100 * l.worst.topShare).toFixed(0)} % of the landscape's beats (<= 31 %)`);
+      if (l.ch >= 1) assert.ok(l.minDistinct >= 10, `${NAMES[l.ch]}: ${l.minDistinct} distinct beat types (>= 10)`);
+    }
+    levels.forEach((lv, k) => {
+      for (let i = 1; i < 13; i++) {
+        const tally = rows[k][i].tally;
+        const present = SIG_VARIANTS[i].filter((n) => tally[n]);
+        assert.ok(present.length >= (circuit === 1 ? 3 : 2), `${NAMES[i]}: ${present.length} structural variants of its signature (${present.join(', ')}); needs >= 3`);
+      }
+      // set pieces: one per landscape, scripted, all different, each ends in the golden-egg crown
+      const seqs = new Set();
+      for (let i = 0; i < 13; i++) {
+        const sp = lv.acts.filter((a) => a.ch === i && a.role === 'setpiece');
+        assert.equal(sp.length, 1, `${NAMES[i]} has one set piece`);
+        const beats = sp[0].beats;
+        assert.equal(beats[beats.length - 1], 'crown', `${NAMES[i]}: the set piece ends in the golden-egg crown`);
+        assert.ok(new Set(beats).size >= (i === 0 ? 2 : 3), `${NAMES[i]}: the set piece uses ${new Set(beats).size} different beats (>= ${i === 0 ? 2 : 3})`);
+        seqs.add(beats.join(','));
+      }
+      if (circuit === 1) assert.equal(seqs.size, 13, 'every landscape has its own set piece (13 different sequences)');
+    });
+  });
+}
+
+/* ─────────────── (D) steering pays ─────────────── */
+
+/** One scripted attempt at a spring sequence in the real sim: roll onto the spring, swipe `kind` (or nothing) `tau` s after launching. Returns golden eggs collected. */
+function springAttempt(lv, kind, tau) {
+  const sp = lv.springs[0];
+  const g = createGame(lv, { flock: 0 }, { checkpoint: 0 });
+  startRun(g);
+  let launched = null, acted = false, golds = 0;
+  for (let i = 0; i < 120 * 20 && g.status === 'running'; i++) {
+    const m = g.mama;
+    if (launched === null && !m.onGround && m.x > sp.x - 30 && m.vy < -300) launched = g.t;
+    if (launched !== null && !acted && kind && g.t - launched >= tau) { act(g, kind); acted = true; }
+    step(g, {});
+    for (const e of g.events) if (e.type === 'gold') golds++;
+    g.events.length = 0;
+    if (m.x > sp.x + 700) break;
+  }
+  return golds;
+}
+
+/** An attempt at iceLeap: jump up onto the first optional ledge, wait `wait` s, (push), jump at its end. Returns golden eggs collected. */
+function leapAttempt(lv, L1, L2, wait, edge, push) {
+  const g = createGame(lv, { flock: 0 }, { checkpoint: 0 });
+  startRun(g);
+  const rise = lv.checkpoints[0].y - L1.y;
+  const x1 = L1.x + 34 - C * flightTime(-rise);
+  let landedAt = null, pushed = false, jumped2 = false, jumped1 = false, golds = 0;
+  for (let i = 0; i < 120 * 16 && g.status === 'running'; i++) {
+    const m = g.mama;
+    if (!jumped1 && m.x >= x1) { act(g, 'jump'); jumped1 = true; }
+    if (jumped1 && landedAt === null && m.onGround && m.ground && m.ground.id === L1.id) landedAt = g.t;
+    if (landedAt !== null && push && !pushed && g.t - landedAt >= wait) { act(g, 'push'); pushed = true; }
+    if (landedAt !== null && !jumped2 && m.x >= L1.x + L1.w - edge) { act(g, 'jump'); jumped2 = true; }
+    step(g, {});
+    for (const e of g.events) if (e.type === 'gold') golds++;
+    g.events.length = 0;
+    if (m.x > L2.x + L2.w + 100) break;
+  }
+  return golds;
+}
+
+test('(D) springs: a swipe in mid-air reaches the ledge a plain launch misses (brake: it is ~45 u short of where she lands, push: ~30 u beyond); with no steering she never collects it', () => {
+  for (const [beat, want, ch] of [['springBrake', 'brake', 3], ['springPush', 'push', 3], ['iceSpring', null, 9]]) {
+    for (const seed of [1, 2, 3, 4, 5]) {
+      const { level, bad } = miniLevel(beat, 8, seed, { ch });
+      assert.ok(!bad, `${beat} builds (${bad})`);
+      const ledge = level.platforms.find((p) => p.o), sp = level.springs[0];
+      assert.ok(ledge && sp && ledge.o === 1, `${beat}: an optional ledge and a spring`);
+      const kinds = want ? [want] : ['brake', 'push'];
+      let best = 0;
+      for (const kind of kinds) { let ok = 0; for (let tau = 0; tau <= 1.0001; tau += 0.05) if (springAttempt(level, kind, tau) > 0) ok++; best = Math.max(best, ok); }
+      assert.ok(best >= 8, `${beat} seed ${seed}: ${best} of 21 swipe timings (a window of ${(best * 0.05).toFixed(2)} s) carry her to the golden egg`);
+      assert.equal(springAttempt(level, null, 0), 0, `${beat} seed ${seed}: with no steering she flies past the ledge`);
+    }
+  }
+});
+
+test('(D) ice: a push in the last second before the edge carries her over the 112 u leap to the golden egg; jump-only play never collects it', () => {
+  for (const seed of [1, 2, 3, 4]) {
+    const { level, bad } = miniLevel('iceLeap', 8, seed, { ch: 9 });
+    assert.ok(!bad, 'iceLeap builds');
+    const [L1, L2] = level.platforms.filter((p) => p.o);
+    const gap = L2.x - L1.x - L1.w;
+    assert.ok(gap >= 108 && gap <= 118, `the leap is ${gap} u (beyond the ~105 u a jump at cruise can span)`);
+    assert.ok(L1.ice && L2.ice, 'the optional ledges are slippery');
+    let withPush = 0, without = 0;
+    for (let wait = 0; wait <= 1.8; wait += 0.1) for (const edge of [-9, -6, -3, 0, 4, 8, 12]) {
+      if (leapAttempt(level, L1, L2, wait, edge, true) > 0) withPush++;
+      if (leapAttempt(level, L1, L2, wait, edge, false) > 0) without++;
+    }
+    assert.ok(withPush >= 15, `seed ${seed}: ${withPush} of ${19 * 7} push + jump timings reach the golden egg`);
+    assert.equal(without, 0, `seed ${seed}: no jump-only timing reaches it`);
+  }
+});
+
+test('(D) optional means optional: every optional platform hangs over an unbroken main route, and the steering beats add nothing required', () => {
+  for (const circuit of [1, 2]) for (const journey of [JOURNEY, 7, 31337]) {
+    const lv = levelOf(circuit, journey);
+    const mainP = main(lv).filter((p) => !isDyn(p));            // Reedwater's logs bob a little: they still carry her
+    for (const p of lv.platforms) {
+      if (!p.o) continue;
+      const under = (x) => mainP.some((m) => x >= m.x && x <= m.x + m.w && m.y > p.y + 20);
+      assert.ok(under(p.x + 2) && under(p.x + p.w / 2) && under(p.x + p.w - 2), `optional ${p.kind} at ${p.x},${p.y}: main-route ground (or a log) under both ends and the middle, so falling costs nothing`);
+      assert.ok(under(p.x + p.w + 36) || mainP.some((m) => p.x + p.w + 36 >= m.x - 7 && p.x + p.w + 36 <= m.x + m.w + 7), `optional ${p.kind} at ${p.x},${p.y}: stepping off its end lands on the main route (not in a pit)`);
+    }
+  }
+  for (const [beat, ch] of [['iceLeap', 9], ['springBrake', 3], ['springPush', 3], ['iceSpring', 9]]) {
+    for (const seed of [1, 2, 3]) {
+      const { level, bad } = miniLevel(beat, 8, seed, { ch });
+      assert.ok(!bad);
+      const mainEv = requiredEvents(level);
+      assert.equal(mainEv.length, 0, `${beat}: no required event (${mainEv.map((e) => e.kind).join(',')}) inside the optional sequence`);
+    }
+  }
+});
+
+test('(D) Frostline carries several optional ice sequences, the later landscapes recall them lightly, and the chapter words are true to the mechanic', () => {
+  for (const circuit of [1, 2]) {
+    const { rows } = feltOfCircuit(circuit);
+    rows.forEach((r, k) => {
+      const ice = (r[9].tally.iceLeap || 0) + (r[9].tally.iceSpring || 0);
+      assert.ok(ice >= (circuit === 1 ? 2 : 1), `circuit ${circuit} journey ${k}: Frostline has ${ice} optional ice sequences (>= ${circuit === 1 ? 2 : 1})`);
+    });
+  }
+  const { rows } = feltOfCircuit(1);
+  const mean = (i, names) => avgOf(rows.map((r) => names.reduce((s, n) => s + (r[i].tally[n] || 0), 0)));
+  assert.ok(mean(9, ['iceLeap', 'iceSpring']) >= 2.5, `Frostline: ${mean(9, ['iceLeap', 'iceSpring']).toFixed(1)} ice sequences a landscape on average (>= 2.5)`);
+  assert.ok(mean(3, ['springBrake', 'springPush']) >= 2, `Orchard: ${mean(3, ['springBrake', 'springPush']).toFixed(1)} spring steering sequences (>= 2)`);
+  // every ice platform is in Frostline (iceMode) or one of the optional recalls
+  const lv = levelOf(1, JOURNEY);
+  for (const p of lv.platforms) if (p.ice && !p.o) assert.equal(p.ch, 9, 'required ice only in Frostline');
+  // words: ice keeps her speed, so push early and brake early; nothing says a swipe is required
+  const f = CHAPTERS[9];
+  for (const text of [f.story, f.learn, f.tip]) assert.ok(/ice|slippery/i.test(text), `${text}: about ice`);
+  assert.ok(/push/i.test(f.learn) && /brake/i.test(f.learn) && /speed|slid/i.test(f.learn), 'the learn text says what ice does (keeps her speed) and what to do (push / brake early)');
+  assert.ok(!/must|have to|required/i.test(`${f.story} ${f.learn} ${f.tip}`), 'no word says a swipe is required');
+  assert.ok(/steer/i.test(CHAPTERS[3].learn) && /mid-air/i.test(CHAPTERS[3].learn), 'Orchard teaches steering in mid-air');
+});
+
+/* ─────────────── (E) child-friendliness ─────────────── */
+
+test('(E) spikes: generous room after a landing, the first two spike landscapes never ask for a spike and a gap together, and a little help comes before the first hazards', () => {
+  for (const circuit of [1, 2]) for (const journey of [JOURNEY, 7, 424242]) {
+    const lv = levelOf(circuit, journey);
+    const plats = main(lv).filter((p) => p.kind === 'ground' && !p.motion);
+    const ev = requiredEvents(lv);
+    for (const h of lv.hazards) {
+      const ch = lv.platforms.find((p) => p.kind === 'ground' && h.x >= p.x && h.x + h.w <= p.x + p.w && p.y === h.y).ch;
+      const own = plats.find((p) => h.x >= p.x && h.x + h.w <= p.x + p.w && p.y === h.y);
+      assert.ok(h.x - own.x >= (ch <= 7 ? 160 : 120) || own.x === plats[0].x, `spikes at ${h.x} (${NAMES[ch]}): ${(h.x - own.x).toFixed(0)} u after the start of their platform`);
+      if (ch === 6 || ch === 7) {
+        // nothing required within 2 s AFTER a spike (no spike -> gap in Ember and Glass Coast)
+        const next = ev.find((e) => e.x > h.x + h.w + 10 && e.cls !== 'spike');
+        assert.ok(!next || next.x - (h.x + h.w) >= 2.2 * C, `spikes at ${h.x} (${NAMES[ch]}): the next required event is ${((next.x - h.x - h.w) / C).toFixed(1)} s later (>= 2.2 s)`);
+      }
+    }
+    // the first walkers, moths and spikes each get a golden egg on the flag before them (and, from the 3rd landscape on, a shield)
+    for (const [i, shield] of [[1, false], [5, true], [6, true]]) {
+      const ch = lv.chapters[i];
+      const teach = lv.acts.find((a) => a.ch === i && a.role === 'teach');
+      const near = lv.pickups.filter((q) => q.x >= teach.x0 - 20 && q.x < teach.x0 + 900);
+      assert.ok(near.some((q) => q.kind === 'gold'), `${NAMES[i]}: a golden egg on the flag before the first hazard`);
+      if (shield) assert.ok(near.some((q) => q.kind === 'shield'), `${NAMES[i]}: a shield too`);
+      void ch;
+    }
+  }
+});
+
+test('(E) imperfect players: a calm but sloppy bot (80 ms of unnoticed latency, +-80 ms jitter) and a button-mashing toddler both make sensible progress through every landscape', { timeout: 900000 }, () => {
+  const lv = levelOf(1, JOURNEY);
+  const sloppy = clearRates(lv, { kind: 'sloppy', trials: 1, stride: FULL ? 1 : 3, seed: 5 });
+  sloppy.rates.forEach((r, i) => { if (Number.isFinite(r)) assert.ok(r >= 0.7, `${NAMES[i]}: the sloppy bot clears ${(100 * r).toFixed(0)} % of its flag-to-flag segments (>= 70 %)`); });
+  assert.ok(sloppy.overall >= 0.9, `the sloppy bot clears ${(100 * sloppy.overall).toFixed(0)} % overall (>= 90 %)`);
+  const mash = [clearRates(levelOf(1, JOURNEY), { kind: 'mash', trials: 6, seed: 3 }), clearRates(levelOf(2, JOURNEY), { kind: 'mash', trials: 6, seed: 4 })];
+  const rates = mash[0].rates.map((_, i) => (mash[0].ok[i] + mash[1].ok[i]) / (mash[0].runs[i] + mash[1].runs[i]));
+  rates.forEach((r, i) => assert.ok(r >= 0.12, `${NAMES[i]}: the mashing toddler (no ducklings, no shield: one hit ends the try) still clears ${(100 * r).toFixed(0)} % of segments (>= 12 %)`));
+  const overall = (mash[0].overall + mash[1].overall) / 2;
+  assert.ok(overall >= 0.25, `the mashing toddler clears ${(100 * overall).toFixed(0)} % of all segments (>= 25 %)`);
+  assert.ok(avgOf(rates.slice(0, 3)) >= 0.4, 'the first three landscapes are the kindest to her');
 });

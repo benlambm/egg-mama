@@ -105,7 +105,9 @@ function blitAt(ctx, s, x, y, rot = 0, sx = 1, sy = sx, alpha = 1) {
 /** Sprites are smooth art: make sure the (possibly pixel-art-configured) context smooths them. */
 function smoothOn(ctx) {
   if (ctx.imageSmoothingEnabled === false) ctx.imageSmoothingEnabled = true;
-  if (ctx.imageSmoothingQuality !== 'high') ctx.imageSmoothingQuality = 'high';
+  // QA-VISUAL (performance): 'low' (bilinear), not 'high' (bicubic / mipmaps). Every sprite is baked at the screen's own scale, so a stamp is
+  // ~1:1 plus a sub-pixel bob; 'high' cost ~1 ms per frame on the software rasteriser for a typical egg trail and showed no visible gain.
+  if (ctx.imageSmoothingQuality !== 'low') ctx.imageSmoothingQuality = 'low';
 }
 
 /**
@@ -793,7 +795,9 @@ const WAYS = {
   beetle: [[218, 0.62, 0.5], [6, 0.72, 0.5], [168, 0.6, 0.4], [282, 0.5, 0.52], [38, 0.8, 0.5]],
   crab: [[6, 0.78, 0.55], [26, 0.85, 0.56], [340, 0.7, 0.6]],
   mite: [[352, 0.72, 0.55], [268, 0.55, 0.55], [28, 0.85, 0.55]],
-  moth: [[48, 0.55, 0.86], [322, 0.5, 0.78], [172, 0.45, 0.78]],
+  // QA-VISUAL: the pale cream / pink moths vanished into Fogwood's pale mist and Dawnbridge's pink sky. Violet first (a bold, "do not touch"
+  // silhouette on both), then a lantern amber and magenta; pickWay still chooses whichever contrasts best with the landscape's sky.
+  moth: [[268, 0.5, 0.48], [26, 0.85, 0.56], [318, 0.55, 0.5]],
   bat: [[288, 0.45, 0.4], [330, 0.5, 0.46], [212, 0.5, 0.44]],
   owl: [[30, 0.5, 0.44], [44, 0.5, 0.62], [268, 0.36, 0.52]],
   hawk: [[22, 0.62, 0.42], [34, 0.5, 0.36], [208, 0.38, 0.44]],
@@ -849,7 +853,9 @@ function useGroup(cache, g) {
 /* ═══════════════════════════════════ WALKERS ═══════════════════════════════════ */
 const FRAMES = 12;
 // art scale per species, so every creature lands near its 34×26 (walker) / 30×24 (flyer) footprint
-const WALK_K = { snail: 0.88, caterpillar: 0.92, beetle: 0.86, crab: 0.94, mite: 1 };
+// QA-VISUAL: the sim's walker hurtbox is 34 x 26 and reaches 26 u up; the beetle (21 u tall) and caterpillar (23 u) left a 3-5 u band above
+// their backs where a jump that visibly cleared them still hurt. Both are scaled up so the art fills the box (beetle 23 u, caterpillar 26 u).
+const WALK_K = { snail: 0.88, caterpillar: 1.02, beetle: 0.95, crab: 0.94, mite: 1 };
 const FLY_K = { bee: 1, moth: 0.82, gull: 0.88, bat: 0.9, owl: 0.86, hawk: 0.9 };
 const WALK_RATE = { snail: 0.9, caterpillar: 1.3, beetle: 2.0, crab: 2.4, mite: 3.2 };
 
@@ -1415,7 +1421,7 @@ export const ACTOR_SIZES = Object.freeze({
   duckling: Object.freeze({ w: 26, h: 23, shadowW: 18 }),
   egg: Object.freeze({ w: 15, h: 21 }),                                       // centre origin; bobs ±1.7
   gold: Object.freeze({ w: 22, h: 28, glow: 44 }),                            // centre origin; body only (sparkles/glow reach ~±18)
-  walker: Object.freeze({ w: 38, h: 26, shadowW: 26 }),                       // feet origin (hurtbox 34 × 26)
+  walker: Object.freeze({ w: 42, h: 27, shadowW: 28 }),                       // feet origin (hurtbox 34 × 26; the longest, the beetle, is 41 u nose to tail)
   flyer: Object.freeze({ w: 43, h: 31 }),                                     // centre origin, widest species (gull / owl) with wings at full spread (hurtbox 30 × 24)
   pickup: Object.freeze({ w: 25, h: 26 }),                                    // centre origin
   bubble: Object.freeze({ w: 49, h: 56, cy: BUBBLE.cy }),                     // drawn about Mama's feet; centre sits `cy` above them

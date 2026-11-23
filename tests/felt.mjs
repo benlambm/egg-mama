@@ -19,6 +19,10 @@
  *                 (upper-route ledges, springs, golden eggs, eggs hung in the air that want a jump).
  *   shares        generator-labelled beat names per landscape: biggest share and distinct count (variety).
  *
+ * feltSummary(levels) averages feltOf over many levels (journeys x circuits) and reports the Spearman of the density ramp and the
+ * lowest landscape-to-landscape ratio. Families for "simultaneous demands": hop (gap, step, crumbling landing), moving platform,
+ * walker, flyer, spike.
+ *
  * Used by tests/levels.test.mjs and tools/level-report.mjs.
  */
 import { T } from '../docs/js/tuning.mjs';
@@ -26,7 +30,7 @@ import { jumpWindow, spikeWindow } from '../docs/js/levels/phys.mjs';
 
 const C = T.cruise;
 export const CHAIN_U = 330;          // events closer than this are one chain (3 s)
-export const COMBO_U = 220;          // a different FAMILY of event (hop / moving platform / walker / flyer / spike) this close is a simultaneous demand
+export const COMBO_U = 330;          // a different FAMILY of event (hop / moving platform / walker / flyer / spike) within this (3 s) is a simultaneous demand
 const kindOf = (k) => (k === 'ground' ? 'ground' : 'ledge');
 const isDyn = (p) => !!p.motion && !(p.kind === 'ledge' && p.motion.amp <= 10);       // Reedwater's logs only bob a little
 const median = (a) => { if (!a.length) return NaN; const s = [...a].sort((p, q) => p - q); return s[s.length >> 1]; };
@@ -207,6 +211,28 @@ export function spearman(xs, ys) {
   let sxy = 0, sxx = 0, syy = 0;
   for (let i = 0; i < n; i++) { sxy += (rx[i] - mx) * (ry[i] - my); sxx += (rx[i] - mx) ** 2; syy += (ry[i] - my) ** 2; }
   return sxy / Math.sqrt(sxx * syy);
+}
+
+/**
+ * Aggregate feltOf() over several levels (journeys x circuits): per landscape, the mean of every numeric measure, the worst
+ * (largest) gapMax / optGapMax / topShare, the smallest `distinct`, the combined beat tally, and the mean density.
+ * Returns { lands: [13 rows], density: [13], spearman, minRatio }.
+ */
+export function feltSummary(levels) {
+  const per = Array.from({ length: 13 }, () => []);
+  for (const lv of levels) feltOf(lv).forEach((r, i) => per[i].push(r));
+  const keys = ['n', 'nLive', 'density', 'liveDensity', 'chainMean', 'chain2', 'chain3', 'winMin', 'winMed', 'winP10', 'comboShare', 'comboPerMin', 'flagToHardest', 'gapMax', 'gapP90', 'gapBreatherMax', 'optGapMax', 'optGapP90', 'optGapBreatherMax', 'beats', 'distinct', 'topShare'];
+  const lands = per.map((rows, i) => {
+    const out = { ch: i, runs: rows.length };
+    for (const k of keys) { const v = rows.map((r) => r[k]).filter(Number.isFinite); out[k] = v.length ? mean(v) : NaN; }
+    out.worst = { gapMax: Math.max(...rows.map((r) => r.gapMax)), optGapMax: Math.max(...rows.map((r) => r.optGapMax)), topShare: Math.max(...rows.map((r) => r.topShare)), gapBreatherMax: Math.max(0, ...rows.map((r) => r.gapBreatherMax)), chainMax: Math.max(...rows.map((r) => r.chainMax)), winMin: Math.min(...rows.map((r) => r.winMin)), gapP90: Math.max(...rows.map((r) => r.gapP90).filter(Number.isFinite)) };
+    out.minDistinct = Math.min(...rows.map((r) => r.distinct));
+    out.tally = {};
+    for (const r of rows) for (const [n, v] of Object.entries(r.tally)) out.tally[n] = (out.tally[n] || 0) + v;
+    return out;
+  });
+  const density = lands.map((l) => l.density);
+  return { lands, density, spearman: spearman(density.map((_, i) => i), density), minRatio: Math.min(...density.slice(1).map((d, i) => d / density[i])) };
 }
 
 export { mean, median, pct };

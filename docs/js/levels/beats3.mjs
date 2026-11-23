@@ -10,26 +10,26 @@ const rd = Math.round;
 
 /** The memorable end of a set piece: a rainbow arch of eggs over safe ground with two golden eggs to jump for. */
 def('crown', { needs: 'gap', hz: false }, (B, c) => {
-  B.run(260, 'line');
+  const mini = !!c.miniCrown;                  // a set piece that is short of room gets the same crown, a little narrower
+  B.run(mini ? 60 : 150, 'line');
   const x0 = B.x;
-  B.run(660, 'none');
+  B.run(mini ? 400 : 520, 'none');
   const top = B.y;
-  const cx = x0 + 330, span = 320, h = rd(c.rand.range(70, 92));
+  const cx = x0 + (mini ? 200 : 260), span = mini ? 250 : 320, h = rd(c.rand.range(70, 92));
   for (let i = 0; i <= 10; i++) {
     const u = i / 10;
     const x = cx - span / 2 + span * u, y = top - 28 - h * Math.sin(Math.PI * u);
     if (i === 3 || i === 7) goldMain(B, x, y); else B.egg(x, y);
   }
-  B.runEggs(x0 + 20, x0 + 140, top, 'line');
-  B.runEggs(x0 + 520, B.x - 20, top, 'line');
-  B.quiet.push([x0 - 200, B.x]);
-  B.run(180, 'line');
+  if (!mini) { B.runEggs(x0 + 20, x0 + 100, top, 'line'); B.runEggs(x0 + 430, B.x - 20, top, 'line'); }
+  B.quiet.push([x0 - 140, B.x]);
+  B.run(mini ? 70 : 110, 'line');
 });
 
 /** Climb three steps to a plateau with a golden egg, then walk down the other side. Walls forgive a late jump. */
 def('hillTop', { needs: 'step', hz: false }, (B, c) => {
   B.tag('step', B.x);
-  const steps = 3;
+  const steps = c.d < 3 ? 2 : 3;                 // two steps up at first, three later
   const hs = [];
   const specs = [];
   for (let i = 0; i < steps; i++) {

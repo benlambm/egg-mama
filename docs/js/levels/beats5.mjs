@@ -7,15 +7,16 @@
  * never asks for either (jump-only at default cruise is the generator's hard guarantee), so ice is where steering PAYS:
  *
  *   iceLeap    an optional high ledge, then a gap of ~112 u (the most one swipe up reaches at cruise is ~105 u) to a second
- *              ledge with a golden egg. A push in the last half second before the edge carries her across; without it she
+ *              ledge with a golden egg. A push in the last second before the edge carries her across; without it she
  *              drops back to the path below. (tests/levels.test.mjs finds the push + jump in the real sim, and checks that
  *              no jump-only play ever collects the golden egg.)
- *   iceFloes   an optional row of tiny ice floes (22 u wide) over the path with a golden egg on the last one. Each landing is
- *              only ~0.3 s wide at cruise; a brake swipe early (she slows to about half and glides) doubles every window.
+ *   iceSpring / springBrake / springPush   a spring FIXES where she takes off, so only a swipe in the air changes where she
+ *              lands: an optional ledge ~45 u short of the plain landing needs a brake, one ~30 u beyond it a push.
  *
- * Both sit ABOVE an unbroken run of the main route: falling never costs anything, nothing here is ever required.
- * Also here: variants for Reedwater (logsStairs), Orchard (springHops), Glass Coast (liftHop), Moonridge (ferryWalker) and
- * Dawnbridge (bridgeWalker).
+ * (A row of tiny ice floes was tried for the brake and dropped: braking shortens her reach, it does not widen any window.)
+ * All of them sit ABOVE an unbroken run of the main route: falling never costs anything, nothing here is ever required.
+ * Also here: variants for Reedwater (logsStairs), Orchard (springHops), Glass Coast (liftHop, liftValley), Moonridge (ferryWalker)
+ * and Dawnbridge (bridgeWalker).
  */
 import { T, clamp } from '../tuning.mjs';
 import { P, chainMax } from './params.mjs';
@@ -58,29 +59,6 @@ def('iceLeap', { needs: 'ice', hz: false }, (B, c) => {
   B.run(120, 'line');
 });
 
-def('iceFloes', { needs: 'ice', hz: false }, (B, c) => {
-  B.tag('iceFloes', B.x);
-  B.run(120, 'line');
-  const base = B.y;
-  const n = 4;
-  const rise = rd(c.rand.range(54, 62));
-  const w = rd(c.rand.range(20, 24));
-  const gap = rd(c.rand.range(42, 48));
-  const x0 = B.x;
-  B.run(70 + n * (w + gap) + 110, 'none');
-  const stop = B.x;
-  const floes = [];
-  let x = x0 + 70;
-  for (let i = 0; i < n; i++) { floes.push(B.plat('ledge', x, base - rise, w, { opt: true, ice: true })); x += w + gap; }
-  B.arc(floes[0].x + w / 2 - C * flightTime(-rise), base, -rise, 3);
-  floes.forEach((f, i) => {
-    if (i === n - 1) gold(B, f.x + w / 2, f.y - 30); else { B.egg(f.x + w / 2, f.y - 26); B.egg(f.x + w + gap / 2, f.y - 58); }
-  });
-  B.runEggs(x0 + 20, stop - 20, base, 'none');
-  B.quiet.push([x0, stop]);
-  B.run(120, 'line');
-});
-
 /**
  * A spring fixes WHERE she takes off, so only steering in the air can change where she lands (in the air she steers at
  * T.airAccel whatever the ground is like): a swipe left drops her short, a swipe right carries her on. Integrates the
@@ -113,12 +91,12 @@ export function steeredFlight(kind, tau, rise, dt = 1 / 120) {
  */
 function springSteer(B, c, kind, ice) {
   if (B.y < 274) { B.fail('springHeight'); return; }
-  B.run(220, 'line');
+  B.run(160, 'line');
   const sx = B.x + 20;
-  B.run(40 + 330, 'none');
+  B.run(40 + 300, 'none');
   B.spring(sx);
   B.tag('spring', sx);
-  const rise = rd(c.rand.range(98, 124));
+  const rise = rd(c.rand.range(96, 110));          // higher than this and the golden egg could be picked up on the way UP, without landing
   const D0 = springLanding(sx, rise) - sx;                                // where a flight with no steering lands (relative)
   if (!(D0 > 0)) { B.fail('spring'); return; }
   const lw = 52;
@@ -129,7 +107,7 @@ function springSteer(B, c, kind, ice) {
   for (let i = 1; i <= n; i++) { const q = path[Math.min(path.length - 1, Math.floor((path.length * i) / (n + 1)))]; B.egg(sx + q.dx, B.y - q.h - 20); }
   gold(B, L.x + lw / 2, L.y - 30);
   B.runEggs(sx + 60, B.x - 80, B.y, 'wave');
-  B.run(180, 'line');
+  B.run(120, 'line');
 }
 def('springBrake', { needs: 'spring', springy: true }, (B, c) => springSteer(B, c, 'brake', false));
 def('springPush', { needs: 'spring', springy: true }, (B, c) => springSteer(B, c, 'push', false));
@@ -176,6 +154,15 @@ def('liftHop', { needs: 'lift' }, (B, c) => {
   if (B.bad) return;
   B.run(rd(c.rand.range(70, 110)), 'line');
   liftUp(B, c, { flat: true });
+  settle(B, c);
+});
+
+/** Down a cliff on one lift, across the valley floor, up the far side on another: the lift ride in both directions. */
+def('liftValley', { needs: 'lift' }, (B, c) => {
+  BEATS.liftDescent.fn(B, c);
+  if (B.bad) return;
+  B.run(rd(c.rand.range(60, 110)), 'line');
+  liftUp(B, c, { gold: c.rand.chance(0.4) });
   settle(B, c);
 });
 

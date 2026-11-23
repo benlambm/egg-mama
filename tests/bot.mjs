@@ -26,6 +26,13 @@
  * Returns { ok, reason, t, clean, x, hits, falls, stomps, jumps, steers, eggs, golds, plans, rollouts, log }.
  * `ok` = reached the target alive with ZERO hits and ZERO falls (flock defaults to 0, so any hit would kill).
  * `clean` = main-route seconds (game time minus the roll-in the sim gives at every start), meant to be summed.
+ *
+ * Imperfect players (LEVELS-2; the report and the (E) tests use them):
+ *   playMash(level, opts)      a button-mashing toddler: no plan, jumps the instant Mama lands, random extra jumps and
+ *                              random push / brake swipes; one flag-to-flag segment, no flock (a hit ends the try)
+ *   clearRates(level, { kind: 'mash' | 'sloppy', trials, stride, seed })
+ *                              per-landscape share of flag-to-flag segments cleared. 'sloppy' is the planner bot with 80 ms of
+ *                              UNCOMPENSATED latency and +-80 ms of jitter: a calm but clumsy player
  */
 import { T } from '../docs/js/tuning.mjs';
 import { createGame, startRun, act, step, cloneGame } from '../docs/js/sim.mjs';

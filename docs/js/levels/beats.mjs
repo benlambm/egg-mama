@@ -3,9 +3,12 @@
  *
  * Every beat starts with the cursor on a long flat ground island (the connector before it guarantees
  * the run-up) and ends with the cursor on ground again, with tail room, at about the same height.
- * A beat reads the context `c` = { d (difficulty here), k (0..1 progress through the act), rand, ch, circuit }
- * and builds with the Builder. Fairness is by construction (phys.mjs windows, trainFeasible) AND verified
- * in tests by the planner bot at many difficulties and game-clock phases.
+ * A beat reads the context `c` = { d (difficulty here), k (0..1 progress through the act), rand, ch, circuit, evLeft } and
+ * builds with the Builder. Chains shorten when the act's event quota is nearly used (capN). Fairness is by construction
+ * (phys.mjs windows, trainFeasible) AND verified in tests by the planner bot at many difficulties and game-clock phases.
+ * rest() is the recovery ground between beats: its length is set by the pacing controller (acts.mjs), a long one may carry a
+ * ledge to climb (upperOverlay: no extra length), and the last 280 u before whatever comes next is always plain and level.
+ * Spikes: width 13-20 u (takeoff window >= 0.31 s), >= 190 u of room after a landing (>= 250 u in the first two spike landscapes).
  */
 import { T, clamp } from '../tuning.mjs';
 import { P, ease, chainMax } from './params.mjs';
@@ -38,11 +41,28 @@ export function rest(B, c, factor = 1, min = 220) {
   const plain = Math.min(len, 280);
   const free = len - plain;
   if (free >= 160) {
-    if (c.rand.chance(0.4)) bumps(B, c, free);
+    // a long rest may carry a ledge above the path with eggs (and now and then a golden one): something to climb for, and no extra length
+    if (free >= 330 && c.rand.chance(c.overlayP ?? 0.3)) upperOverlay(B, c, free);
+    else if (c.rand.chance(0.4)) bumps(B, c, free);
     else B.run(free, 'auto');
   }
   B.run(plain, 'line');
   dropPickups(B, c, x0, B.x);
+}
+
+/** An optional ledge hung above `len` u of flat path (a rest): an easy jump up, eggs along it, sometimes a golden egg. Adds no length. */
+function upperOverlay(B, c, len) {
+  const base = B.y;
+  const w = rd(clamp(P.ledge(c.d) + c.rand.range(10, 40), 100, 160));
+  const h = rd(c.rand.range(66, 80));
+  const pre = rd(c.rand.range(90, Math.max(100, len - w - 130)));
+  const x0 = B.x;
+  B.run(len, 'none');
+  const L = B.plat('ledge', x0 + pre, base - h, w, { opt: true });
+  B.arc(L.x + Math.min(34, w * 0.3) - C * flightTime(-h), base, -h, 3);
+  for (let k = 1; k <= 3; k++) { const ex = L.x + (w * k) / 4; if (k === 2 && c.rand.chance(0.3) && B.x - B.lastGold > 2600) { B.gold(ex, L.y - 30); } else B.egg(ex, L.y - 26); }
+  B.runEggs(x0 + 20, x0 + pre - 40, base, 'line');
+  B.quiet.push([x0, x0 + pre]);
 }
 
 /** A few tiny rolling hills (steps up of at most 6 u, any drop): the ground stops looking like a ruler. */
@@ -59,10 +79,11 @@ function bumps(B, c, len) {
 
 /** Golden / shield / magnet pickups on SAFE flat ground, spaced by main-route distance (about 45 s, 90 s, 3 min). */
 export function dropPickups(B, c, x0, x1) {
-  if (x1 - x0 < 260) return;
+  if (x1 - x0 < 150) return;
   const mid = (x0 + x1) / 2 + c.rand.range(-30, 30);
   // each kind keeps its own clock; when several are due on the same stretch they sit side by side
   if (B.x - B.lastGold > 3600 + c.rand.range(0, 600)) { B.gold(mid, B.y - 28); B.lastGold = B.x; }
+  if (x1 - x0 < 260) return;                           // a shield / magnet sits beside the gold egg: only on a rest long enough for both
   if (c.ch >= 2 && B.x - B.lastShield > 9600 + c.rand.range(0, 1500)) { B.pickup('shield', mid + 90, B.y - 30); B.lastShield = B.x; B.tag('shield', mid); }
   if (c.ch >= 1 && B.x - B.lastMagnet > 16000 + c.rand.range(0, 3000)) { B.pickup('magnet', mid - 90, B.y - 30); B.lastMagnet = B.x; B.tag('magnet', mid); }
 }
@@ -277,7 +298,7 @@ export function spikeHop(B, c, w, cycle = null) {
   B.spikeArc(h, { n: 4 });
   return h;
 }
-export const spikeW = (c) => rd(clamp(P.spikeW(c.d) + c.rand.range(-1, 1), 14, 24));   // takeoff window >= 0.28 s at any difficulty
+export const spikeW = (c) => rd(clamp(P.spikeW(c.d) + c.rand.range(-1, 1), 13, 20));   // takeoff window >= 0.31 s at any difficulty
 
 def('spike1', { needs: 'spikes' }, (B, c) => {
   B.run(30, 'none');
@@ -307,7 +328,7 @@ def('spikeCycle', { needs: 'spikes' }, (B, c) => {
 def('gapSpike', { needs: 'spikes' }, (B, c) => {
   B.tag('gap', B.x);
   const g = gapW(c);
-  const lead = rd(150 + c.rand.range(0, 30));
+  const lead = rd((c.ch <= 7 ? 250 : 190) + c.rand.range(0, 30));       // recovery room after the landing: the first spike landscapes get the most
   const w = spikeW(c);
   const isl = lead + 40 + w + 190;
   B.train([{ gap: g, w: isl, dy: 0 }]);
@@ -336,10 +357,10 @@ def('spikeGap', { needs: 'spikes' }, (B, c) => {
  */
 export function springLedge(B, c, { two = false, tall = false } = {}) {
   if (B.y < 274) { B.fail('springHeight'); return; }
-  const lead = 220;
+  const lead = 160;
   B.run(lead, 'line');
   const sx = B.x + 20;                 // spring centre
-  B.run(40 + 360 + (two ? 240 : 0), 'none');
+  B.run(40 + 300 + (two ? 240 : 0), 'none');
   B.spring(sx);
   B.tag('spring', sx);
   const e = ease(c.d);
@@ -367,7 +388,7 @@ export function springLedge(B, c, { two = false, tall = false } = {}) {
     const L2 = B.plat('ledge', lx2 - lw / 2, B.y - rise2, lw, { opt: true });
     B.egg(L2.x + lw * 0.3, L2.y - 26); gold(B, L2.x + lw * 0.6, L2.y - 30);
   }
-  B.run(180, 'line');
+  B.run(120, 'line');
 }
 def('springLedge', { needs: 'spring', springy: true }, (B, c) => springLedge(B, c));
 def('springTwo', { needs: 'spring', springy: true }, (B, c) => springLedge(B, c, { two: true }));

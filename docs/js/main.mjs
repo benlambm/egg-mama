@@ -434,6 +434,10 @@ function checkOrientation() {
     input.releaseAll();
     setMode('rotate');
     ui.show('rotate', { phase: 'prompt' });
+  } else if (portrait && mode === 'rotate') {
+    // sideways ("Tap to continue") and then upright AGAIN before anyone tapped: the screen must say "turn your phone" again.
+    // (It used to keep saying "Tap to continue" while upright, and that tap did nothing: resumePlay refuses in portrait.)
+    if (ui.current !== 'rotate' || ui.el('rotate').dataset.phase !== 'prompt') ui.show('rotate', { phase: 'prompt' });
   } else if (!portrait && mode === 'rotate') {
     const back = rotateReturn ? rotateReturn.mode : 'title';
     if (back === 'playing') ui.show('rotate', { phase: 'ready' });      // the player decides when the run resumes
@@ -750,6 +754,7 @@ function autopilot(g) {
 function plannerBot(g) {
   const m = g.mama;
   if (g.status !== 'running' || !m.onGround || m.buffer > 0) return false;
+  if (m.vx < 25 && m.rollIn > 1.2) { act(g, 'jump'); return true; }                  // stopped by the face of a step up: not a fall, so the look-ahead below would wait for ever
   const safe = (doJump) => {
     const c = cloneGame(g);
     if (doJump) act(c, 'jump');

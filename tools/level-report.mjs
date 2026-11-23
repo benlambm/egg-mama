@@ -10,6 +10,21 @@
  *   node tools/level-report.mjs --acts               print only the per-act difficulty trace
  *   node tools/level-report.mjs --json               machine-readable
  *
+ * The FELT report (what a child feels from the BUILT geometry; tests/felt.mjs never looks at the generator's curves):
+ *
+ *   node tools/level-report.mjs --felt [--journeys 20] [--circuits 1,2]
+ *        per landscape, averaged over the journeys x circuits: required events a minute (whole landscape, and the live acts
+ *        without breathers and flag stations), chains (mean size, share in chains of 3+), takeoff windows (min / median),
+ *        simultaneous demands, seconds from a flag to its hardest event, the longest wait for a required event (mean of the
+ *        maxima, worst) and its p90, the longest quiet stretch counting optional activity, the biggest beat share, the
+ *        number of distinct beat types; plus the Spearman of the density ramp and the lowest landscape-to-landscape ratio.
+ *   node tools/level-report.mjs --felt --bots [--journeys 3]
+ *        adds the clear rates (per landscape, flag to flag, no flock) of a button-mashing toddler and of a calm but sloppy
+ *        planner bot (80 ms of unnoticed latency, +-80 ms jitter)
+ *   node tools/level-report.mjs --listing 4 [--journey N] [--circuit C]
+ *        the beat-by-beat listing of landscape 4 (1-based): every act, every beat with its start time, its required events,
+ *        its optional activity and the flags, so a designer can read the landscape like a score
+ *
  * Prints a per-landscape table (length, clean time, acts, flags, jumps, gaps, enemies by kind, spikes, springs, lifts,
  * movers, crumbles, golden eggs, eggs, difficulty at start / middle / end, demand) and a per-act trace of the
  * difficulty the generator asked for next to the demand measured from the geometry.
@@ -26,6 +41,65 @@ const circuit = Number(opt('circuit', 1));
 const journey = Number(opt('journey', 20261122));
 const seed = opt('seed', null) !== null ? Number(opt('seed')) >>> 0 : levelSeed(journey, circuit);
 const C = T.cruise;
+
+/* ───────── --felt and --listing (aggregate / designer views) ───────── */
+const NAMES = CHAPTERS.map((c) => c.name);
+const fmt = (v, d = 1, w = 6) => (Number.isFinite(v) ? v.toFixed(d) : '-').padStart(w);
+if (opt('felt', false)) {
+  const { feltSummary, feltOf } = await import('../tests/felt.mjs');
+  const J = Number(opt('journeys', 20));
+  const circuits = String(opt('circuits', '1,2')).split(',').map(Number);
+  for (const cir of circuits) {
+    const t0 = performance.now();
+    const levels = Array.from({ length: J }, (_, j) => generateLevel({ circuit: cir, seed: levelSeed(900 + j * 7919, cir) }));
+    const genMs = (performance.now() - t0) / J;
+    const sum = feltSummary(levels);
+    console.log(`\nFELT  circuit ${cir}  ${J} journeys  (generation ${genMs.toFixed(0)} ms each)`);
+    console.log('#  landscape        ev/min  live/min  chain  ch3%  winMin winMed  combo%  flag>hard  gapMax(mean/worst)  gapP90  optGap(worst)  topBeat%  distinct');
+    sum.lands.forEach((l, i) => console.log([String(i + 1).padStart(2), NAMES[i].padEnd(15), fmt(l.density, 2), fmt(l.liveDensity, 2, 8), fmt(l.chainMean, 2), fmt(100 * l.chain3, 0, 5), fmt(l.worst.winMin, 2), fmt(l.winMed, 2), fmt(100 * (l.comboShare || 0), 0, 6), fmt(l.flagToHardest, 1, 8), `${fmt(l.gapMax, 1)}/${fmt(l.worst.gapMax, 1)}`.padStart(18), fmt(l.gapP90, 1), fmt(l.worst.optGapMax, 1, 12), fmt(100 * l.worst.topShare, 0, 8), String(l.minDistinct).padStart(6)].join('  ')));
+    console.log(`Spearman(density, landscape) = ${sum.spearman.toFixed(3)}; lowest landscape / previous = ${sum.minRatio.toFixed(2)}; Meadow ${sum.density[0].toFixed(1)} -> Summit ${sum.density[12].toFixed(1)} required events a minute`);
+    const top = sum.lands.map((l) => Object.entries(l.tally).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([n, v]) => `${n} ${(v / l.runs).toFixed(1)}`).join(', '));
+    console.log('most common beats per landscape (a landscape has about 19-29 beats):');
+    top.forEach((t, i) => console.log(`  ${NAMES[i].padEnd(15)} ${t}`));
+    void feltOf;
+  }
+  if (opt('bots', false)) {
+    const { clearRates } = await import('../tests/bot.mjs');
+    const BJ = Math.min(J, Number(opt('botjourneys', 3)));
+    for (const kind of ['mash', 'sloppy']) {
+      const ok = new Array(13).fill(0), runs = new Array(13).fill(0);
+      const t0 = performance.now();
+      for (const cir of circuits) for (let j = 0; j < BJ; j++) {
+        const r = clearRates(generateLevel({ circuit: cir, seed: levelSeed(900 + j * 7919, cir) }), { kind, trials: kind === 'mash' ? 6 : 1, seed: 11 + j });
+        r.ok.forEach((v, i) => { ok[i] += v; runs[i] += r.runs[i]; });
+      }
+      console.log(`\n${kind === 'mash' ? 'button-mashing toddler' : 'calm but sloppy bot (80 ms latency, +-80 ms jitter)'}: share of flag-to-flag segments cleared with no flock (${BJ} journeys x circuits ${circuits.join(',')}, ${((performance.now() - t0) / 1000).toFixed(0)} s)`);
+      console.log('  ' + ok.map((v, i) => `${NAMES[i].split(' ')[0]} ${(100 * v / runs[i]).toFixed(0)}%`).join('  '));
+      console.log(`  overall ${(100 * ok.reduce((a, b) => a + b, 0) / runs.reduce((a, b) => a + b, 0)).toFixed(0)}%`);
+    }
+  }
+  process.exit(0);
+}
+if (opt('listing', false)) {
+  const { requiredEvents, optionalActivity } = await import('../tests/felt.mjs');
+  const ch = Number(opt('listing', 1)) - 1;
+  const seedL = opt('seed', null) !== null ? Number(opt('seed')) >>> 0 : levelSeed(journey, circuit);
+  const lv = generateLevel({ circuit, seed: seedL });
+  const ev = requiredEvents(lv), opts = optionalActivity(lv);
+  const x0 = lv.chapters[ch].x0;
+  const flags = lv.checkpoints.filter((c) => c.ch === ch).map((c) => c.x);
+  console.log(`${NAMES[ch]}  (circuit ${circuit}, seed ${seedL}): ${((lv.chapters[ch].x1 - x0) / C).toFixed(0)} s, ${flags.length} flags\n`);
+  for (const a of lv.acts.filter((q) => q.ch === ch)) {
+    console.log(`== ${a.id} (${a.role})  ${((a.x0 - x0) / C).toFixed(0)}s .. ${((a.x1 - x0) / C).toFixed(0)}s`);
+    a.beats.forEach((b, i) => {
+      const bx = a.beatX[i], nx = a.beatX[i + 1] ?? a.x1;
+      const n = ev.filter((e) => e.x >= bx && e.x < nx), o = opts.filter((x) => x >= bx && x < nx).length;
+      const fl = flags.some((f) => f >= bx - 300 && f < nx);
+      console.log(`  ${String(Math.round((bx - x0) / C)).padStart(4)}s  ${b.padEnd(16)} ${String(Math.round((nx - bx) / C)).padStart(3)}s   required ${n.length} ${n.length ? '(' + [...new Set(n.map((e) => e.kind))].join(', ') + ')' : ''}  optional ${o}${fl ? '   [flag]' : ''}`);
+    });
+  }
+  process.exit(0);
+}
 
 const t0 = performance.now();
 const level = generateLevel({ circuit, seed });

@@ -7,7 +7,9 @@
  * from the seeded `rand` passed in.
  *
  * Builders support mark() / rollback(): a beat that does not fit (or that fails its fairness check) is simply
- * undone and a different one is tried.
+ * undone and a different one is tried. The builder also keeps the books the pacing controller works from: `events` (the
+ * required events built so far, eventsSince(mark) counts them and says where the first / last one sits), `lastEventX` (flat
+ * ground since then is recovery room), `stationLen` and the beat log (`beatLog` / `beatX`, rolled back with everything else).
  */
 import { T } from '../tuning.mjs';
 import { C, flightTime, heightAt, trainFeasible, jumpWindow, spikeWindow, MAX_RISE } from './phys.mjs';
@@ -38,6 +40,7 @@ export class Builder {
     this.logStart = 0;             // where this landscape's beats begin in beatLog
     this.evFirst = Infinity; this.evLast = -Infinity;   // see eventsSince()
     this.lastEventX = -1e9;        // the end of the last required event built (the flat ground since then counts as recovery room)
+    this.helped = new Set();       // landscapes whose first hazard already got its little help (a golden egg, a shield)
     this.rich = {};                // spec -> { ev, len }: how many events per length each spec has delivered so far (learned as the world is built)
   }
 
@@ -187,10 +190,10 @@ export class Builder {
     this.cps.push({ id: this.cps.length, x: rd(this.x), y: c.y, platform: c.id, ch: this.ch });
   }
   /** Quiet flat ground, a checkpoint flag with >= 250 u of hazard-free ground behind it and >= `after` ahead. */
-  station({ before = 260, after = 420, pat = 'line' } = {}) {
+  station({ before = 250, after = 380, pat = 'line' } = {}) {
     this.run(before, pat);
     this.flag();
-    this.run(after, pat);
+    this.run(after, pat === 'line' ? 'hops' : pat);        // eggs hung in an arc to jump for: even a flag's quiet ground has something to do
     this.stationLen += before + after;
   }
 

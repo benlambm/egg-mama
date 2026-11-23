@@ -659,41 +659,139 @@ function groundGlow(ctx, s, id, K, xa, xb, w) {
   if (xb > c1) draw(c1, Math.PI * 1.5, Math.PI * 2);
 }
 
+/* ── ground islands: a pre-painted STRIP for the interior, a clipped window for each end ──────────────────────────────────────────
+ * QA-VISUAL (performance). A ground island used to be painted from scratch every frame: a clip path, a full-height gradient, a
+ * pattern fill, an ambient-occlusion gradient, rim bars and an outline stroke over ~2500 x 300 device pixels. That was 4-6 ms of the
+ * 8-12 ms a frame costs on the software rasteriser (and the biggest cost on a low-end phone). The interior of an island is
+ * periodic, so it is now painted ONCE per (landscape, skin, variant) into an opaque strip one texture period (GP u) wide and
+ * GSH u deep, and every frame is a handful of 1:1 integer-pixel blits of it plus a flat fill below. Only the two ends of an island
+ * (GCAP u each: rounded corners, lit / shaded end faces, side outlines) still go through a clip, and that clip is a few dozen
+ * pixels wide. The look is unchanged; the texture simply no longer starts at a per-island phase. Blits sit on the same device-pixel
+ * grid as the island's origin (localFrame), so the period grid is seamless and cannot shimmer as the camera moves. */
+const GSH = 120;           // strip depth (u): the body gradient ends (a flat K.deep) at 118
+const GCAP = 30;           // width (u) of each end window
+
+function opaqueSurface(w, h) {
+  const c = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h) : Object.assign(document.createElement('canvas'), { width: w, height: h });
+  return c;
+}
+/** The interior of a ground island, one period wide: body gradient + strata/pebble tile + ambient occlusion + rim light (opaque). */
+function groundStrip(s, ch, skin, iceFlag, K, variant) {
+  const id = ch.id + '|g|' + skin + (iceFlag ? 'i' : '');
+  const key = id + '|strip' + variant;
+  let st = s.tiles.get(key);
+  if (st) return st;
+  const k = s.scale, wp = Math.max(1, Math.round(GP * k)), hp = Math.max(1, Math.round(GSH * k));
+  const canvas = opaqueSurface(wp, hp), c = canvas.getContext('2d', { alpha: false });
+  c.setTransform(wp / GP, 0, 0, hp / GSH, 0, 0);
+  c.fillStyle = vgrad(c, s, id + '|body', 0, 118, [0, K.soilLit, 0.1, K.soil, 0.5, K.soilDk, 1, K.deep]);
+  c.fillRect(0, 0, GP, GSH);
+  fillTile(c, groundTile(s, ch, skin, iceFlag, K, variant), 0, GP, 0);
+  c.fillStyle = vgrad(c, s, id + '|ao', 6, 30, [0, 'rgba(24,10,48,' + (K.ice || skin === 'cloud' ? 0.1 : 0.3) + ')', 1, 'rgba(24,10,48,0)']);
+  c.fillRect(0, 6, GP, 24);
+  c.fillStyle = rgba(K.rim, 0.97); c.fillRect(0, 0.9, GP, K.dark ? 2.5 : 1.9);
+  c.fillStyle = rgba(K.rim, K.dark ? 0.5 : 0.3); c.fillRect(0, K.dark ? 3.4 : 2.8, GP, 1.8);
+  st = { canvas, wp, hp };
+  s.tiles.set(key, st);
+  return st;
+}
+/** The soft light above a landing surface in dark landscapes, one period wide (the straight middle of groundGlow). */
+function glowStrip(s, ch, skin, K) {
+  const id = ch.id + '|g|' + skin, key = id + '|gstrip';
+  let st = s.tiles.get(key);
+  if (st) return st;
+  const k = s.scale, wp = Math.max(1, Math.round(GP * k)), hp = Math.max(1, Math.round(GLOW_H * k));
+  const canvas = createSurface(wp, hp), c = canvas.getContext('2d');
+  c.setTransform(wp / GP, 0, 0, hp / GLOW_H, 0, hp);                 // local y -GLOW_H..0 (what the shared gradient is authored for) -> strip rows 0..hp
+  c.fillStyle = vgrad(c, s, id + '|glow', -GLOW_H, 0, [0, rgba(K.rim, 0), 0.6, rgba(K.rim, 0.14), 1, rgba(K.rim, 0.46)]);
+  c.fillRect(0, -GLOW_H, GP, GLOW_H);
+  st = { canvas, wp, hp };
+  s.tiles.set(key, st);
+  return st;
+}
+
+/** 1:1 blit of strip pieces onto device pixels [dx0, dx1) with the period grid anchored at device x X0, top row at device y Y0. */
+function blitStrip(ctx, st, X0, Y0, dx0, dx1) {
+  const wp = st.wp, W = ctx.canvas.width, H = ctx.canvas.height;
+  if (dx0 < 0) dx0 = 0;
+  if (dx1 > W) dx1 = W;
+  if (dx1 <= dx0 || Y0 >= H) return;
+  const rows = Math.min(st.hp, H - Y0), yy = Y0 < 0 ? -Y0 : 0;
+  if (rows - yy <= 0) return;
+  for (let kk = Math.floor((dx0 - X0) / wp); X0 + kk * wp < dx1; kk++) {
+    const px0 = X0 + kk * wp, a = px0 > dx0 ? px0 : dx0, b = px0 + wp < dx1 ? px0 + wp : dx1;
+    if (b > a) ctx.drawImage(st.canvas, a - px0, yy, b - a, rows - yy, a, Y0 + yy, b - a, rows - yy);
+  }
+}
+
 function drawGround(ctx, cache, s, p, ch, x, y, t) {
   const ice = !!p.ice, base = (ch.skin && ch.skin.ground) || 'grass';
   const skin = ice ? 'ice' : base;
-  const K = groundKit(ch, skin, ice && base !== 'ice');
+  const iceFlag = ice && base !== 'ice';
+  const K = groundKit(ch, skin, iceFlag);
   const w = p.w, id = ch.id + '|g|' + skin + (ice ? 'i' : '');
   const f = localFrame(ctx, x, y);
   const xa = Math.max(0, f.vx0), xb = Math.min(w, f.vx1);
   if (xb <= xa) return;
-  const bottom = Math.max(p.h || 0, T.killY - y) + 8;
-  const rc = 6, rl = xa <= 0 ? rc : 0, rrad = xb >= w ? rc : 0;
   const variant = hash(p.id, 3) & 1;
-  const tile = groundTile(s, ch, skin, ice && base !== 'ice', K, variant);
+  const st = groundStrip(s, ch, skin, iceFlag, K, variant);
+  const m = ctx.getTransform(), S = m.a;
+  const X0 = Math.round(S * f.x + m.e), Y0 = Math.round(m.d * f.y + m.f);        // the island's origin on the device pixel grid
+  const G0 = X0 - (hash(p.id, 5) % st.wp);                                       // where this island's texture period starts: a per-island phase, so neighbours do not repeat each other
+  const W = ctx.canvas.width, H = ctx.canvas.height;
+  const Hb = (H - Y0) / m.d + 6;                                                   // local y of the screen's bottom edge (+ a little)
+  const rc = 6;
+  const capPx = Math.round(GCAP * S), capU = capPx / S;
+  const devL = (u) => X0 + Math.round(u * S);
+  const leftEnd = xa <= 0, rightEnd = xb >= w;
+  const small = w * S < 2 * capPx + 4;                                           // too short for an interior: one window
+  const sheen = !!p.ice;
+  const skinGlow = K.dark ? glowStrip(s, ch, skin, K) : null;
+
+  // an end window [a, b] (local units): rounded where it is a real end, lit / shaded end faces, outline on the real edges
+  const windowDraw = (a, b) => {
+    const rl = a <= 0 ? rc : 0, rrad = b >= w ? rc : 0;
+    ctx.save();
+    ctx.translate(f.x, f.y);
+    if (K.dark) groundGlow(ctx, s, id, K, a, b, w);
+    groundPath(ctx, a, b, Hb, rl, rrad); ctx.clip();
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const d0 = Math.max(0, devL(a)), d1 = Math.min(W, a <= 0 && b >= w ? devL(w) + 1 : devL(b) + 1);
+    blitStrip(ctx, st, G0, Y0, d0, d1);
+    if (Y0 + st.hp < H) { ctx.fillStyle = K.deep; ctx.fillRect(d0, Y0 + st.hp, d1 - d0, H - Y0 - st.hp); }
+    ctx.restore();
+    if (sheen) drawSheen(ctx, cache, s, K, id, a, b, w, p.id, t);
+    if (a <= 0) { ctx.fillStyle = hgrad(ctx, s, id + '|el', 0, 13, [0, 'rgba(255,244,210,0.3)', 1, 'rgba(255,244,210,0)']); ctx.fillRect(0, 0, 13, Hb); }
+    if (b >= w) { ctx.save(); ctx.translate(w, 0); ctx.fillStyle = hgrad(ctx, s, id + '|er', -16, 0, [0, 'rgba(24,10,48,0)', 1, 'rgba(24,10,48,0.4)']); ctx.fillRect(-16, 0, 16, Hb); ctx.restore(); }
+    ctx.restore();
+  };
+
+  let ia = xa, ib = xb;
+  if (small) {
+    windowDraw(xa, xb);
+  } else {
+    // the end windows sit on whole device pixels so the interior blit meets them exactly
+    if (leftEnd) { windowDraw(0, capU); ia = capU; }
+    let rx = w;
+    if (rightEnd) { rx = (Math.floor(S * f.x + m.e + w * S - capPx) - X0) / S; windowDraw(rx, w); ib = rx; }
+    if (ib > ia) {
+      const d0 = devL(ia), d1 = devL(ib);
+      ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+      if (skinGlow) blitStrip(ctx, skinGlow, G0, Y0 - skinGlow.hp, Math.max(d0, devL(GLOW_INSET)), Math.min(d1, devL(w - GLOW_INSET)));
+      blitStrip(ctx, st, G0, Y0, d0, d1);
+      if (Y0 + st.hp < H && d1 > d0) { ctx.fillStyle = K.deep; ctx.fillRect(Math.max(0, d0), Y0 + st.hp, Math.min(W, d1) - Math.max(0, d0), H - Y0 - st.hp); }
+      ctx.restore();
+      ctx.save(); ctx.translate(f.x, f.y);
+      if (sheen) drawSheen(ctx, cache, s, K, id, ia, ib, w, p.id, t);
+      ctx.restore();
+    }
+  }
   ctx.save();
   ctx.translate(f.x, f.y);
   ctx.imageSmoothingEnabled = true;
-  // soft glow above the surface in dark landscapes (so the landing pops against the cave)
-  if (K.dark) groundGlow(ctx, s, id, K, xa, xb, w);
-  // body
-  ctx.save();
-  groundPath(ctx, xa, xb, bottom, rl, rrad); ctx.clip();
-  ctx.fillStyle = vgrad(ctx, s, id + '|body', 0, 118, [0, K.soilLit, 0.1, K.soil, 0.5, K.soilDk, 1, K.deep]);
-  ctx.fillRect(xa, 0, xb - xa, bottom);
-  fillTile(ctx, tile, xa, xb, (hash(p.id, 5) % GP));
-  ctx.fillStyle = vgrad(ctx, s, id + '|ao', 6, 30, [0, 'rgba(24,10,48,' + (K.ice || skin === 'cloud' ? 0.1 : 0.3) + ')', 1, 'rgba(24,10,48,0)']);
-  ctx.fillRect(xa, 6, xb - xa, 24);
-  // rim light on the landing surface (bright in every landscape; extra bright in the dark)
-  ctx.fillStyle = rgba(K.rim, 0.97); ctx.fillRect(xa, 0.9, xb - xa, K.dark ? 2.5 : 1.9);
-  ctx.fillStyle = rgba(K.rim, K.dark ? 0.5 : 0.3); ctx.fillRect(xa, K.dark ? 3.4 : 2.8, xb - xa, 1.8);
-  if (p.ice) drawSheen(ctx, cache, s, K, id, xa, xb, w, p.id, t);
-  // lit left end, shaded right end (solid-looking sides)
-  if (xa <= 0) { ctx.fillStyle = hgrad(ctx, s, id + '|el', 0, 13, [0, 'rgba(255,244,210,0.3)', 1, 'rgba(255,244,210,0)']); ctx.fillRect(0, 0, 13, bottom); }
-  if (xb >= w) { ctx.save(); ctx.translate(w, 0); ctx.fillStyle = hgrad(ctx, s, id + '|er', -16, 0, [0, 'rgba(24,10,48,0)', 1, 'rgba(24,10,48,0.4)']); ctx.fillRect(-16, 0, 16, bottom); ctx.restore(); }
-  ctx.restore();
-  // outline: dark hue of the cap at the top, dark soil on the sides
-  groundPath(ctx, xa, xb, bottom, rl, rrad);
+  // outline: ONE stroke over the whole visible island (dark hue of the cap at the top, dark soil on the sides), so pieces never show a seam
+  const rl = leftEnd ? rc : 0, rrad = rightEnd ? rc : 0;
+  groundPath(ctx, xa, xb, Hb, rl, rrad);
   ctx.strokeStyle = vgrad(ctx, s, id + '|out', 0, 40, [0, K.outTop, 1, K.outBody]);
   ctx.lineWidth = 2.4; ctx.lineJoin = 'round'; ctx.stroke();
   if (K.dark) { ctx.beginPath(); ctx.moveTo(xa + rl, -0.4); ctx.lineTo(xb - rrad, -0.4); ctx.strokeStyle = rgba(K.rim, 0.55); ctx.lineWidth = 1; ctx.stroke(); }
@@ -1051,6 +1149,9 @@ function drawSlab(ctx, cache, s, skin, p, ch, x, y, t) {
   if (xb >= w) { ctx.save(); ctx.translate(w, 0); ctx.fillStyle = hgrad(ctx, s, id + '|er', -10, 0, [0, 'rgba(24,10,48,0)', 1, 'rgba(24,10,48,0.34)']); ctx.fillRect(-10, 0, 10, h + 14); ctx.restore(); }
   ctx.restore();
   spec.path(ctx, xa, xb, w, h, p.id);
+  // QA-VISUAL: in the dark landscapes the slab's dark own-hue outline is the same value as the cave behind it (2.9:1 in Lantern Caverns), so a
+  // pale key-line sits just outside it: the dark outline stays, and the edge is now light-on-dark as well (edge contrast >= 3.7:1).
+  if (K.dark) { ctx.strokeStyle = rgba(K.rim, 0.45); ctx.lineWidth = 4.6; ctx.lineJoin = 'round'; ctx.stroke(); }
   ctx.strokeStyle = K.out; ctx.lineWidth = 2.2; ctx.lineJoin = 'round'; ctx.stroke();
   if (K.dark) { ctx.beginPath(); ctx.moveTo(xa + (xa <= 0 ? 4 : 0), -0.4); ctx.lineTo(xb - (xb >= w ? 4 : 0), -0.4); ctx.strokeStyle = rgba(K.rim, 0.55); ctx.lineWidth = 1; ctx.stroke(); }
   if (spec.front) spec.front(ctx, cache, s, K, p, w, h, xa, xb, id, t);
@@ -1132,6 +1233,7 @@ function crumbleSlab(ctx, s, K, id, p, w, h, tile, prog) {
   ctx.fillStyle = rgba(K.rim, K.dark ? 0.4 : 0.24); ctx.fillRect(2, 2.7, w - 4, 1.3);
   ctx.restore();
   crumblePath(ctx, w, h, p.id);
+  if (K.dark) { ctx.strokeStyle = rgba(K.rim, 0.45); ctx.lineWidth = 4.5; ctx.lineJoin = 'round'; ctx.stroke(); }          // pale key-line (see drawSlab)
   ctx.strokeStyle = K.out; ctx.lineWidth = 2.1; ctx.lineJoin = 'round'; ctx.stroke();
 }
 
@@ -1251,8 +1353,11 @@ function drawLift(ctx, cache, s, p, ch, x, y, t) {
   for (const cx of [11, w - 11]) { rr(ctx, cx - 5, -4, 10, 10, 2.5); ctx.fillStyle = vgrad(ctx, s, id + '|brk', -4, 6, [0, STEEL.cl, 1, STEEL.cd]); ctx.fill(); ctx.strokeStyle = STEEL.out; ctx.lineWidth = 1.6; ctx.stroke(); ctx.beginPath(); ctx.arc(cx, 1, 1.1, 0, TAU); ctx.fillStyle = STEEL.out; ctx.fill(); }
   ctx.restore();
 }
+// QA-VISUAL: the pulley beam hangs ~50 u above the highest the deck gets, right where the generator puts egg trails, and its bright rim-lit top
+// read as a second platform (the golden egg sat "on" it). It is now a thin DARK iron bar with no light edge: every landing surface in the game
+// has a bright rim, so this one must not.
 function steelBar(ctx, s, id, x, y, w, h) {
-  rr(ctx, x, y, w, h, 3); ctx.fillStyle = vgrad(ctx, s, id + '|beam', -9, -1, [0, STEEL.cl, 0.5, STEEL.c, 1, STEEL.cd]); ctx.fill(); ctx.strokeStyle = STEEL.out; ctx.lineWidth = 1.8; ctx.stroke();
+  rr(ctx, x, y + 1, w, h - 2, 2); ctx.fillStyle = vgrad(ctx, s, id + '|beam2', y + 1, y + h - 1, [0, '#66728f', 1, '#3b4560']); ctx.fill(); ctx.strokeStyle = 'rgba(40,46,70,0.9)'; ctx.lineWidth = 1.2; ctx.stroke();
 }
 
 function drawMover(ctx, cache, s, p, ch, x, y, t) {
@@ -1289,12 +1394,21 @@ function drawMover(ctx, cache, s, p, ch, x, y, t) {
  * orange-tipped urchin), so they read against every ground. */
 
 const SPIKE_MOD = { thorn: 14, stone: 16, crystal: 15, urchin: 19 };
+// QA-VISUAL: the hitbox is 16-20 u, but a 19 u cone is a speck on a phone and the first thing a child must read in a busy painting. The art is
+// drawn SPIKE_K times bigger than the module was authored (baked at that size, so it stays crisp), with a pale key-line around it so it pops
+// off dark paintings as well as bright ones, and a soft hot halo on the ground (see drawSpikes). Mama's hurtbox is far narrower than her art
+// (|dx| < 20 u hurts, her art overlaps the spike from ~29 u) so the bigger art only ever errs on the forgiving side.
+const SPIKE_K = 1.42;
+const SPIKE_KEY_R = 1.15;           // key-line width (u)
+const SPIKE_HALO = { thorn: '#ff4a58', stone: '#ff7e3a', crystal: null, urchin: '#ffa23a' };
 
 function spikeColors(ch, skin) {
   const P = ch.palette;
   switch (skin) {
     case 'thorn': return { body: mix('#b02f4e', P.shadow, 0.12), tip: '#ff7a55', dark: '#3f1129', litc: '#ffb08a', base: mix(P.fringe, '#2e2a36', 0.55) };
-    case 'stone': return { body: mix(P.rock, P.shadow, 0.62), tip: '#fff1cf', dark: outline(P.rock, 0.86), litc: lit(P.rock, 0.5), base: shade(P.soil, 0.35) };
+    // a deep plum-grey rock with a bone-white tip: darker than the red/orange/pink paintings it stands in front of, and nothing
+    // like the warm-brown ground cairns that sit around it
+    case 'stone': { const body = mix(shade(P.rock, 0.5), '#3a2c4c', 0.5); return { body, tip: '#fff6dc', dark: outline(body, 0.7), litc: lit(mix(P.rock, '#c9b0d8', 0.4), 0.45), base: shade(P.soil, 0.4) }; }
     case 'crystal': {
       // one danger hue for every crystal landscape (hot pink / magenta), never icy blue or lilac: Frostline's harmless ice shards and
       // the cave's harmless crystal tufts are cool blues, and a child must be able to tell them from the thing that hurts
@@ -1319,7 +1433,7 @@ function drawSpikeModule(c, skin, C, v) {
     const lean = (v - 1) * 2;
     oval(c, 0, 0.8, 8.8, 3.2); c.fillStyle = C.base; c.fill(); c.strokeStyle = C.dark; c.lineWidth = 1.5; c.stroke();
     c.beginPath(); c.moveTo(-7.6, 1); c.lineTo(-4.2, -9.5); c.lineTo(-1 + lean, -15); c.lineTo(1.4 + lean * 1.5, -19.5); c.lineTo(3.8, -12); c.lineTo(7.6, 1); c.closePath();
-    c.fillStyle = linear(c, 0, 1, 0, -19.5, [0, shade(C.body, 0.15), 0.55, C.body, 1, C.tip]); c.fill(); c.strokeStyle = C.dark; c.lineWidth = 1.9; c.stroke();
+    c.fillStyle = linear(c, 0, 1, 0, -19.5, [0, shade(C.body, 0.15), 0.42, C.body, 0.78, mix(C.body, C.tip, 0.5), 1, C.tip]); c.fill(); c.strokeStyle = C.dark; c.lineWidth = 1.9; c.stroke();
     c.beginPath(); c.moveTo(-6.6, 0); c.lineTo(-3.8, -9); c.lineTo(0.4 + lean, -15); c.lineTo(1.4 + lean, -6); c.closePath(); c.fillStyle = rgba(C.litc, 0.4); c.fill();
     c.beginPath(); c.moveTo(-1.5, -12); c.lineTo(2.2, -9.5); c.moveTo(0.5, -5); c.lineTo(4, -3.8); c.strokeStyle = rgba(C.dark, 0.5); c.lineWidth = 1; c.stroke();
   } else if (skin === 'crystal') {
@@ -1345,12 +1459,28 @@ function drawSpikeModule(c, skin, C, v) {
   }
 }
 
+/** Draw `draw` into the sprite `c` with a thin pale key-line (the silhouette, dilated) behind it. `c` is the cache.get() context. */
+function keyed(c, cache, w, h, ox, oy, draw, col, r) {
+  const k = cache.scale, p = cache.pad, W = Math.ceil((w + p * 2) * k), H = Math.ceil((h + p * 2) * k);
+  const art = createSurface(W, H), ac = art.getContext('2d');
+  ac.scale(k, k); ac.translate(p + ox, p + oy); draw(ac);
+  const sil = createSurface(W, H), sc = sil.getContext('2d');
+  sc.drawImage(art, 0, 0); sc.globalCompositeOperation = 'source-in'; sc.fillStyle = col; sc.fillRect(0, 0, W, H);
+  c.save(); c.setTransform(1, 0, 0, 1, 0, 0);
+  const R = r * k;
+  for (let i = 0; i < 12; i++) { const a = i * TAU / 12; c.drawImage(sil, Math.cos(a) * R, Math.sin(a) * R); }
+  c.drawImage(art, 0, 0);
+  c.restore();
+}
+
 function spikeSprites(s, cache, ch, skin) {
-  const key = ch.id + '|spk|' + skin;
+  const key = ch.id + '|spk2|' + skin;
   let set = s.decor.get(key);
   if (set) return set;
-  const C = spikeColors(ch, skin), w = SPIKE_MOD[skin] + 8, h = 28;
-  set = [0, 1, 2].map((v) => cache.get('terr|' + key + '|' + v, w, h, w / 2, h - 3, (c) => drawSpikeModule(c, skin, C, v)));
+  const C = spikeColors(ch, skin), K = SPIKE_K, w = (SPIKE_MOD[skin] + 8) * K, h = 28 * K, oy = h - 3 * K;
+  const keyCol = ch.dark ? 'rgba(255,255,255,0.95)' : 'rgba(255,250,236,0.92)';
+  set = [0, 1, 2].map((v) => cache.get('terr|' + key + '|' + v, w, h, w / 2, oy,
+    (c) => keyed(c, cache, w, h, w / 2, oy, (cc) => { cc.scale(K, K); drawSpikeModule(cc, skin, C, v); }, keyCol, SPIKE_KEY_R)));
   set.C = C;
   s.decor.set(key, set);
   return set;
@@ -1388,13 +1518,26 @@ export function drawSpikes(ctx, cache, h, chapter, t = 0, warn) {
     for (let i = 0; i < n; i++) { const cx = (i + 0.5) * w / n; ctx.fillStyle = hot > 0 ? rgba(PLATE.hot, 0.5 + 0.5 * hot) : PLATE.slot; ctx.fillRect(cx - 3.4, 1.1, 6.8, 1.9); }
   }
   if (ext > 0.02) {
+    // danger halo: a soft hot glow standing on the ground around the spikes (it breathes slowly), so "this one hurts" survives
+    // a busy painting. Upper half-ellipse only, so it never stains the soil. Fades with the spikes while a cycling hazard sinks.
+    const halo = SPIKE_HALO[skin] || C.glow;
+    if (halo) {
+      let g = s.grads.get(ch.id + '|spkhalo');
+      if (!g) { g = ctx.createRadialGradient(0, 0, 0, 0, 0, 1); g.addColorStop(0, rgba(halo, 0.5)); g.addColorStop(0.45, rgba(halo, 0.2)); g.addColorStop(1, rgba(halo, 0)); s.grads.set(ch.id + '|spkhalo', g); }
+      const breathe = 0.82 + 0.18 * Math.sin(t * 3.2 + (h.id | 0));
+      ctx.save();
+      ctx.translate(w / 2, 1); ctx.scale(w / 2 + 22, 30);
+      ctx.globalAlpha = Math.min(1, ext) * breathe * (ch.dark ? 1 : 0.85);
+      ctx.fillStyle = g; ctx.fillRect(-1, -1, 2, 1);
+      ctx.restore();
+    }
     ctx.save();
-    if (ext < 1) { ctx.beginPath(); ctx.rect(-8, -40, w + 16, 40.5); ctx.clip(); }         // sinks INTO the ground
+    if (ext < 1) { ctx.beginPath(); ctx.rect(-14, -56, w + 28, 56.5); ctx.clip(); }         // sinks INTO the ground
     const n = Math.max(1, Math.round(w / SPIKE_MOD[skin])), step = w / n;
     for (let i = 0; i < n; i++) {
       const hh = hash(h.id | 0, i, 91), v = hh % 3, scl = (0.9 + ((hh >>> 4) & 7) / 7 * 0.22) * hs;
       const rot = wig ? Math.sin(t * 40 + i * 1.9) * 0.17 * wig : 0;
-      const sink = (1 - ext) * 22 * scl;
+      const sink = (1 - ext) * 22 * SPIKE_K * scl;
       cache.stamp(ctx, set[v], (i + 0.5) * step, 0.5 + sink, (hh & 0x100) ? -1 : 1, scl, rot, 1);
     }
     ctx.restore();
@@ -1698,8 +1841,24 @@ export function drawBeacon(ctx, cache, b) {
   ctx.save(); ctx.translate(b.x, b.y); ctx.imageSmoothingEnabled = true;
   const p = clamp01(lt / 2.2);
   if (b.lit) {
-    cache.stamp(ctx, set.rays, 0, fy, 1.3 + 0.5 * (1 - p), 1.3 + 0.5 * (1 - p), t * 0.12, 0.5 + 0.4 * (1 - p));
-    cache.stamp(ctx, set.glow, 0, fy, 1.5 + 0.12 * Math.sin(t * 8) + 0.9 * (1 - p) * (1 - p), 1.5 + 0.12 * Math.sin(t * 8) + 0.9 * (1 - p) * (1 - p), 0, 0.9);
+    // QA-VISUAL (performance): the rays and the halo used to be 260 u / 220 u bitmaps stamped at 1.3-2.4x, rotating: 1500-2700 device px
+    // squares of bilinear alpha blending each frame, ~12-24 ms on the software rasteriser (the whole frame budget, in the one scene where
+    // the child is watching hardest). The rays are now twelve thin wedges filled with one cached radial gradient (the same picture, but
+    // only the ~15 % of the area that is not empty is touched) and the halo is a gradient disc.
+    const k = 1.3 + 0.5 * (1 - p);
+    let g = s.grads.get('beacon|rays');
+    if (!g) { g = ctx.createRadialGradient(0, 0, 10, 0, 0, 128); g.addColorStop(0, 'rgba(255,244,190,0.8)'); g.addColorStop(1, 'rgba(255,244,190,0)'); s.grads.set('beacon|rays', g); }
+    ctx.save(); ctx.translate(0, fy); ctx.rotate(t * 0.12); ctx.scale(k, k); ctx.globalAlpha = 0.5 + 0.4 * (1 - p);
+    ctx.beginPath();
+    for (let i = 0; i < 12; i++) { const a = i / 12 * TAU, w = 0.075; ctx.moveTo(Math.cos(a - w) * 16, Math.sin(a - w) * 16); ctx.lineTo(Math.cos(a) * 128, Math.sin(a) * 128); ctx.lineTo(Math.cos(a + w) * 16, Math.sin(a + w) * 16); ctx.closePath(); }
+    ctx.fillStyle = g; ctx.fill();
+    ctx.restore();
+    const gs = 1.5 + 0.12 * Math.sin(t * 8) + 0.9 * (1 - p) * (1 - p);
+    let hg = s.grads.get('beacon|halo');
+    if (!hg) { hg = ctx.createRadialGradient(0, 0, 2, 0, 0, 108); hg.addColorStop(0, 'rgba(255,236,160,0.9)'); hg.addColorStop(0.25, 'rgba(255,210,110,0.5)'); hg.addColorStop(0.6, 'rgba(255,190,90,0.16)'); hg.addColorStop(1, 'rgba(255,190,90,0)'); s.grads.set('beacon|halo', hg); }
+    ctx.save(); ctx.translate(0, fy); ctx.scale(gs, gs); ctx.globalAlpha = 0.9;
+    ctx.beginPath(); ctx.arc(0, 0, 108, 0, TAU); ctx.fillStyle = hg; ctx.fill();
+    ctx.restore();
   }
   ctx.fillStyle = 'rgba(20,10,40,0.22)'; ctx.beginPath(); ctx.ellipse(0, 1, 44, 3.6, 0, 0, TAU); ctx.fill();
   cache.stamp(ctx, set.tower, 0, 2);
@@ -1828,8 +1987,9 @@ export function warmTerrainSteps(cache, chapter, ctx = null) {
   const gK = groundKit(ch, gBase, false), lK = ledgeKit(ch, lBase, false), lSpec = LEDGES[lBase] || LEDGES.plank;
   const steps = [
     () => touch(s, cache, ch),
-    () => pat(groundTile(s, ch, gBase, false, gK, 0)),
-    () => pat(groundTile(s, ch, gBase, false, gK, 1)),
+    () => groundStrip(s, ch, gBase, false, gK, 0),
+    () => groundStrip(s, ch, gBase, false, gK, 1),
+    () => { if (gK.dark) glowStrip(s, ch, gBase, gK); },
     () => decorFor(s, cache, ch, gK, gBase),
     () => pat(ledgeTile(s, ch.id + '|l|' + lBase, lSpec, lK)),
     () => { const ice = lBase === 'ice'; pat(crumbleTile(s, crumbleKit(ch, ice), ch.id + '|c|' + (ice ? 'ice' : lBase))); },
@@ -1839,7 +1999,7 @@ export function warmTerrainSteps(cache, chapter, ctx = null) {
   ];
   if (ch.ice || gBase === 'ice') {
     const iK = groundKit(ch, 'ice', false);
-    steps.push(() => pat(groundTile(s, ch, 'ice', false, iK, 0)), () => pat(groundTile(s, ch, 'ice', false, iK, 1)), () => decorFor(s, cache, ch, iK, 'ice'));
+    steps.push(() => groundStrip(s, ch, 'ice', false, iK, 0), () => groundStrip(s, ch, 'ice', false, iK, 1), () => decorFor(s, cache, ch, iK, 'ice'));
   }
   if (ch.beacon) steps.push(() => beaconSprites(s, cache, ch));
   return steps;

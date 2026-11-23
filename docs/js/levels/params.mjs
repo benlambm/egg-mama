@@ -38,10 +38,10 @@ export const P = {
   flyerPeriod: (d) => at(4.9, 3.3, d),
   /**
    * spikes: width (u). A spike hop's takeoff window is (54.9 - w) u (see phys.spikeWindow: her body must be 13 u clear of the
-   * thorns on both sides), so 15 u gives 0.36 s and 22 u gives 0.30 s. (22 -> 32 u gave 0.30 -> 0.21 s: the one element in the
+   * thorns on both sides), so 14 u gives 0.37 s and 19 u gives 0.33 s. (22 -> 32 u gave 0.30 -> 0.21 s: the one element in the
    * game that a sloppy but calm player kept hitting, while every gap, lift and enemy has a window of 0.35 s or more.)
    */
-  spikeW: (d) => at(15, 22, d),
+  spikeW: (d) => at(14, 19, d),
   /** crumbling ledges */
   crumbleW: (d) => at(104, 70, d),
   crumbleGap: (d) => at(22, 42, d),
@@ -57,22 +57,28 @@ export const P = {
 };
 
 /**
- * How many REQUIRED events per minute a landscape should ask for (raw: per minute of the whole landscape, flag stations and
- * breathers included). This is the felt ramp: about 5 a minute at the very start of Meadow rising evenly to about 11.5 at the
- * Summit (a hop, a lift ride, a walker, a flyer, a spike each count one). `within` is how far through the landscape; every
- * later circuit asks a little more but still starts gentle. levelgen paces each landscape to this by rest length; the tests
- * check the result from the built geometry (tests/felt.mjs), never from this function.
+ * How many REQUIRED events per minute a landscape should ask for (per minute of the whole landscape: flag stations and
+ * breathers included, which is what a child experiences). This is the felt ramp: about 5.4 a minute in Meadow rising slowly to
+ * about 11 at the Summit (a hop, a lift ride, a walker, a flyer, a spike each count one); the table runs a little above the straight
+ * line in the chain-heavy landscapes (stepping logs, cracked ledges) whose signature is a run of hops; the Summit's entry is a pull
+ * (its lift and spring beats are long, so the controller settles near 11). `within` nudges it up
+ * through a landscape; every later circuit asks 0.9 more but still starts gentle. levelgen paces each landscape to this by rest
+ * length; the tests check the result from the built geometry (tests/felt.mjs), never from this function.
  */
-export const RATE = (i, within = 0.5, circuit = 1) => Math.min(13.8, 5.0 + 0.523 * (i + within) + 0.9 * (circuit - 1));
-
-/** About this much of a stretch of main route is flag station (the safe ground around a flag), which pacing does not count. */
-export const STATION_SHARE = 0.27;
+const RATE_TABLE = [5.4, 6.0, 7.0, 7.3, 7.6, 8.0, 8.5, 9.0, 9.4, 9.9, 10.4, 10.7, 12.4];
+export const RATE = (i, within = 0.5, circuit = 1) => Math.min(13.8, RATE_TABLE[i] + (within - 0.5) * 0.5 + 0.9 * (circuit - 1));
 
 /** How much of the landscape's events each kind of act carries, relative to the others (the gentle sawtooth inside a landscape). */
 export const ROLE_RATE = { opening: 0, recall: 0.8, teach: 0.9, vary: 1.0, combine: 1.15, setpiece: 1.2, breather: 0, closing: 0.85 };
 
 /** Longest run of back-to-back hops (a chain: 'plan the second landing'): 2 at the start, 5 at the summit. */
 export const chainMax = (d) => Math.round(clamp(2 + 3 * ease(d) / 0.62, 2, 5));
+
+/**
+ * How many required events one beat may pack together (a chain: events a second or two apart) before the act controller
+ * turns to a calmer beat: singles at first (Meadow), then doubles, then triples, ... fives at the summit. A soft limit.
+ */
+export const chainCap = (d) => clamp(1.0 + 4.1 * ease(d) / 0.6, 1.0, 5.6);
 
 /** Ordered element families and the landscape index (0-based) where each is introduced in circuit 1. */
 export const ELEMENT_INTRO = {

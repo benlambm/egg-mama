@@ -69,6 +69,7 @@ const WARM_AHEAD = 5200;            // ...and baking the next landscape's sprite
 const SHADOW_FADE_H = 140;          // a shadow fades 1 -> 0.45 over this much height
 const WARM_BUDGET_MS = 3;
 const DEAD_TUMBLE = 5.5;            // rad/s
+const PIT_TOP = 281;                // world y where the pit shade begins (just above the usual ground line, 292)
 const DRIFT_CAP = 90;               // CSS px: the most a frozen world (title / pause / finish) drifts its painting by itself
 
 /* ═════════════════════════ per-level index (built once per level, read every frame) ═════════════════════════ */
@@ -127,7 +128,7 @@ function indexLevel(level) {
   ix.enemies = buildSpan(level.enemies,
     (e) => (e.kind === 'walker' ? e.x0 : e.cx - e.ax),
     (e) => (e.kind === 'walker' ? e.x0 - 44 : e.cx - e.ax - 44), (e) => (e.kind === 'walker' ? e.x1 + 44 : e.cx + e.ax + 44));
-  ix.hazards = buildSpan(level.hazards, (h) => h.x, (h) => h.x - 12, (h) => h.x + h.w + 12);
+  ix.hazards = buildSpan(level.hazards, (h) => h.x, (h) => h.x - 26, (h) => h.x + h.w + 26);      // the danger halo reaches ~22 u past the spikes
   ix.springs = buildSpan(level.springs, (s) => s.x, (s) => s.x - 28, (s) => s.x + 28);
   ix.flags = buildSpan(level.checkpoints, (c) => c.x, (c) => c.x - 40, (c) => c.x + 56);
 
@@ -597,11 +598,13 @@ export class Renderer {
     if (!this._ng) return;
     let g = this._pitGrad;
     if (!g) {
-      g = this._pitGrad = ctx.createLinearGradient(0, 270, 0, T.viewH + 6);
-      g.addColorStop(0, 'rgba(14,16,44,0)'); g.addColorStop(0.45, 'rgba(14,16,44,0.28)'); g.addColorStop(1, 'rgba(10,10,32,0.62)');
+      // QA-VISUAL: the old shade (0 at y 270, 0.28 mid, 0.62 at the bottom) left a 44 u gap in a bright painting (Meadow, Frostline, the
+      // clouds) looking like a seam, not a drop. It now starts at the ground line and is clearly darker, so a pit reads as a hole.
+      g = this._pitGrad = ctx.createLinearGradient(0, PIT_TOP, 0, T.viewH + 6);
+      g.addColorStop(0, 'rgba(14,16,44,0)'); g.addColorStop(0.13, 'rgba(14,16,44,0.36)'); g.addColorStop(0.5, 'rgba(12,13,38,0.64)'); g.addColorStop(1, 'rgba(8,8,28,0.86)');
     }
     ctx.fillStyle = g;
-    for (let i = 0; i < this._ng; i++) { const x0 = this._gaps[i * 2] - 8, x1 = this._gaps[i * 2 + 1] + 8; ctx.fillRect(x0, 270, x1 - x0, T.viewH + 6 - 270); }
+    for (let i = 0; i < this._ng; i++) { const x0 = this._gaps[i * 2] - 8, x1 = this._gaps[i * 2 + 1] + 8; ctx.fillRect(x0, PIT_TOP, x1 - x0, T.viewH + 6 - PIT_TOP); }
   }
 
   /** The flood / sea band: only in landscapes whose chapter says `water`, fading in and out over the dissolve. */
@@ -674,18 +677,20 @@ export class Renderer {
   /** A soft two-layer ellipse on the surface below, shrinking and fading with height so a landing can be judged. */
   _shadow(ctx, x, y, baseRx, strength) {
     if (!this._groundBelow(x, y)) return;
+    // QA-VISUAL: at jump height the old shadow (0.45 of its strength, 0.68 of its width, 4 u thick) was a faint sliver; the child
+    // watches Mama's shadow to decide where she will come down, so it stays fat and dark all the way up (0.7 / 0.9 at 140 u).
     const top = this._gy, d = Math.max(0, top - y), k = d > SHADOW_FADE_H ? 1 : d / SHADOW_FADE_H;
-    const s = (1 - 0.55 * k) * strength, rx = baseRx * (1 - 0.32 * k);
+    const s = (1 - 0.3 * k) * strength, rx = baseRx * (1 - 0.1 * k);
     let x0 = x - rx, x1 = x + rx;
     if (x0 < this._sx0) x0 = this._sx0;
     if (x1 > this._sx1) x1 = this._sx1;
     if (x1 - x0 < 3) return;
     // it lies ON the lit cap (a few units below the top edge), not across the dark outline, so it reads as a shadow on the surface
-    const cx = (x0 + x1) / 2, hw = (x1 - x0) / 2, ry = Math.max(1.9, rx * 0.15), cy = top + 3.1;
+    const cx = (x0 + x1) / 2, hw = (x1 - x0) / 2, ry = Math.max(2.6, rx * 0.2), cy = top + 3.4;
     ctx.fillStyle = '#241648';
-    ctx.globalAlpha = 0.3 * s;
+    ctx.globalAlpha = 0.42 * s;
     ctx.beginPath(); ctx.ellipse(cx, cy, hw, ry, 0, 0, TAU); ctx.fill();
-    ctx.globalAlpha = 0.4 * s;
+    ctx.globalAlpha = 0.58 * s;
     ctx.beginPath(); ctx.ellipse(cx, cy, hw * 0.62, ry * 0.66, 0, 0, TAU); ctx.fill();
     ctx.globalAlpha = 1;
   }
@@ -737,7 +742,7 @@ export class Renderer {
     let nh = 0;
     for (let k = k0; k < k1; k++) {
       const h = hz[sp.idx ? sp.idx[k] : k];
-      if (h.x + h.w + 12 < camL || h.x - 12 > camR) continue;
+      if (h.x + h.w + 26 < camL || h.x - 26 > camR) continue;
       drawSpikes(ctx, cache, h, CHAPTERS[this._chIdx(ix, h.x)], gt, hazardWarn(h, gt));
       nh++;
     }

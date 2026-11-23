@@ -96,16 +96,20 @@ async function journey(browser, server) {
     await sleep(1100);                                                       // the steer expires: back to the gentle roll
     const settled = (await st(page)).mama.vx;
     t.ok(Math.abs(settled - 110) < 12, `the roll returns to cruise after the steer (vx ${settled.toFixed(0)})`);
+    await page.evaluate(() => { const a = window.__brake = { minVx: Infinity, dir: 0 }; const f = () => { const m = window.__egg.game().mama; a.minVx = Math.min(a.minVx, m.vx); if (m.steerDir === -1) a.dir = -1; a.id = requestAnimationFrame(f); }; f(); });
     await doSwipe(cdp, 'left');
     await sleep(500);
     const braked = await st(page);
-    t.ok(braked.mama.steerDir === -1 && braked.mama.vx < 30, `swipe left: brake / back up (vx ${braked.mama.vx.toFixed(0)})`);
+    const brake = await page.evaluate(() => { cancelAnimationFrame(window.__brake.id); return window.__brake; });
+    t.ok(brake.dir === -1 && brake.minVx < 0, `swipe left: brake / back up (slowest vx ${brake.minVx.toFixed(0)}: she rolls backwards for a moment)`);          // (sampled every frame: a loaded machine cannot miss it)
     await shot(page, 'game-04-brake');
     const log = await page.evaluate(() => window.__egg.actionLog.slice());
     t.ok(['jump', 'push', 'brake'].every((a) => log.includes(a)), `Input classified jump, push and brake (${log.join(',')})`);
-    await sleep(1200);
 
     // ── eggs, the first golden egg ──
+    // The first golden egg is a couple of hundred units from the start, and the swipes above jump over it (and the first gap, which
+    // she would then fall into). Where exactly it sits changes with the generator: step her back to just before it.
+    await page.evaluate(() => { const e = window.__egg, g = e.game(), gold = g.level.pickups.find((p) => p.kind === 'gold'); if (g.flock < 1 && !gold.taken) e.teleport(gold.x - 150); });
     await waitFor(page, () => window.__egg.state().eggs > 0, null, 25000);
     t.ok(true, 'ordinary eggs are collected');
     await waitFor(page, () => window.__egg.state().flock >= 1, null, 25000);
@@ -115,12 +119,15 @@ async function journey(browser, server) {
 
     // ── checkpoint autosave ──
     const lvl = await page.evaluate(() => { const l = window.__egg.level(); return { cp1: l.checkpoints[1].x, cp2: l.checkpoints[2].x, n: l.checkpoints.length }; });
+    // the totals AT the moment the checkpoint event fires (an egg or a golden egg may lie just past a flag: she can collect it before we read the save)
+    await page.evaluate(() => { const r = window.__egg.renderer, sp = r.spawn.bind(r); window.__cp = null; r.spawn = (events, game) => { for (const e of events) if (e.type === 'checkpoint' && e.index === 2) window.__cp = { eggs: game.eggs, score: game.score, flock: game.flock }; return sp(events, game); }; });
     await page.evaluate((x) => window.__egg.teleport(x - 200), lvl.cp2);
     await waitFor(page, () => window.__egg.state().checkpoint === 2, null, 8000);
     await sleep(300);
     s = await st(page);
-    t.ok(s.stored && s.stored.flag === 2 && s.stored.chapter === 0 && s.stored.eggs === s.eggs && s.stored.flock === s.flock, 'checkpoint event autosaves flag, eggs, score and flock to localStorage', s.stored);
-    t.ok(s.stored && s.stored.score === s.score && s.stored.playSeconds > 0, `stored score ${s.stored && s.stored.score}, playSeconds ${s.stored && s.stored.playSeconds.toFixed(1)}`);
+    const atFlag = await page.evaluate(() => window.__cp);
+    t.ok(s.stored && atFlag && s.stored.flag === 2 && s.stored.chapter === 0 && s.stored.eggs === atFlag.eggs && s.stored.flock === atFlag.flock, 'checkpoint event autosaves flag, eggs, score and flock to localStorage', { stored: s.stored, atFlag });
+    t.ok(s.stored && atFlag && s.stored.score === atFlag.score && s.stored.playSeconds > 0, `stored score ${s.stored && s.stored.score}, playSeconds ${s.stored && s.stored.playSeconds.toFixed(1)}`);
     await shot(page, 'game-06-checkpoint');
     const saved = s.stored;
     const cpX = lvl.cp2;

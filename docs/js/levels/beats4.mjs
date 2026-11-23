@@ -14,7 +14,7 @@
  *   Ember Canyon  spikeStep (spikes on a raised plateau)
  *   Glass Coast   liftFerry (a vertical ferry between banks at one height), liftDrop (down a cliff on a lift)
  *   Lantern       liftCrumbleChain (lift -> crumble -> crumble -> ground)
- *   Frostline     iceSteps (ice planks up and down)   [the optional ice sequences are in beats5.mjs]
+ *   Frostline     iceSteps (ice planks up and down)   [the optional ice / spring-steering sequences are in beats5.mjs]
  *   Moonridge     ferryTwo (mover, island, mover), ferryStep (the far bank is higher)
  *   Dawnbridge    bridgeMissing (a missing span bridged by a cracked stone), bridgeArch (decks that rise and fall),
  *                 bridgePillars (decks on pillars of different heights)
@@ -138,7 +138,7 @@ def('logsRaft', { needs: 'logs' }, (B, c) => {
   const specs = [
     { kind: 'ledge', gap: gapW(c, -10), w: ledgeW(c), dy: 0 },
     { kind: 'ledge', gap: gapW(c, -10), w: rd(c.rand.range(190, 240)), dy: 0, gold: c.rand.chance(0.4) },
-    { kind: 'ledge', gap: gapW(c, -10), w: ledgeW(c), dy: 0 },
+    ...(c.d >= 4 && !(Number.isFinite(c.evLeft) && c.evLeft < 3.5) ? [{ kind: 'ledge', gap: gapW(c, -10), w: ledgeW(c), dy: 0 }] : []),     // the second small log comes a little later in the hour
     { kind: 'ground', gap: gapW(c, -7), w: landW(c), dy: 0 },
   ];
   bob(B, c, B.train(specs, logOpts(c)));
@@ -159,7 +159,7 @@ def('logsLane', { needs: 'logs' }, (B, c) => {
   top.forEach((L, i) => {
     if (i % 2 !== 0 && i !== top.length - 1) return;
     const h = rd(c.rand.range(70, 80));
-    const U = B.plat('ledge', L.x + 8, L.y - h, Math.min(L.w - 4, 110), { opt: true });
+    const U = B.plat('ledge', L.x + 4, L.y - h, Math.max(44, Math.min(L.w - 56, 100)), { opt: true });        // ends well before the log does: stepping off it drops her back onto the log
     B.clearEggs(k0, U.x - 6, U.x + U.w + 6, U.y - 14, U.y + U.h + 14);          // the arcs of the low lane pass through this height
     B.egg(U.x + U.w * 0.3, U.y - 26);
     if (i === top.length - 1 || i === 2) gold(B, U.x + U.w * 0.7, U.y - 30); else B.egg(U.x + U.w * 0.7, U.y - 26);
@@ -174,9 +174,9 @@ def('springTall', { needs: 'spring', springy: true }, (B, c) => springLedge(B, c
 /** A spring to a ledge in the branches, then a hop to a second ledge (optional): an upper route in two parts. */
 def('springChain', { needs: 'spring', springy: true }, (B, c) => {
   if (B.y < 274) { B.fail('springHeight'); return; }
-  B.run(220, 'line');
+  B.run(160, 'line');
   const sx = B.x + 20;
-  B.run(40 + 640, 'none');
+  B.run(40 + 600, 'none');
   B.spring(sx);
   B.tag('spring', sx);
   const e = ease(c.d);
@@ -193,7 +193,7 @@ def('springChain', { needs: 'spring', springy: true }, (B, c) => {
   B.egg(L1.x + lw + 26, Math.min(L1.y, L2.y) - 40);
   gold(B, L2.x + lw * 0.5, L2.y - 30);
   B.runEggs(sx + 60, B.x - 80, B.y, 'wave');
-  B.run(180, 'line');
+  B.run(120, 'line');
 });
 
 /** Plank stairs: thin branches up and back down (a main-route chain, jump to jump). */
@@ -349,7 +349,7 @@ def('liftCrumbleChain', { needs: 'liftCrumble' }, (B, c) => {
 /** Ice planks that climb and fall: stepping ledges on the slippery stuff. */
 def('iceSteps', { needs: 'ice' }, (B, c) => {
   B.tag('ice', B.x);
-  const n = capN(c, clamp(chainMax(c.d) - 1, 2, 3), 2);
+  const n = capN(c, clamp(chainMax(c.d) - 2, 2, 3), 2);
   const a = rd(c.rand.range(14, 18));
   const specs = [];
   for (let i = 0; i < n; i++) specs.push({ kind: 'ledge', gap: gapW(c, -10), w: ledgeW(c) + 16, dy: i < n - 1 ? -a : 0, ice: true });
