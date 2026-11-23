@@ -1295,3 +1295,77 @@ test('(E) imperfect players: a calm but sloppy bot (80 ms of unnoticed latency, 
   assert.ok(overall >= 0.25, `the mashing toddler clears ${(100 * overall).toFixed(0)} % of all segments (>= 25 %)`);
   assert.ok(avgOf(rates.slice(0, 3)) >= 0.4, 'the first three landscapes are the kindest to her');
 });
+
+/* ─────────────── (F) takeoff windows measured in the REAL sim ─────────────── */
+
+/**
+ * LEVELS-2 audit. phys.jumpWindow / spikeWindow are the generator's own model (checked against the sim only for a handful of
+ * synthetic cases), and tests/felt.mjs reads its windows from that model. This measures every hop and spike of the BUILT world by
+ * playing it: a one-runway world with just the departing platform and the landing, a real Mama rolling at cruise, a swipe up at
+ * every 3 u of takeoff position, and a count of the takeoffs that land on the next platform (or clear the spike) without a hit
+ * or a fall. Lifts and movers are skipped (their windows depend on the clock; the bot sweeps cover them).
+ */
+function simTrial(plats, hazards, xj, done) {
+  const lv = {
+    circuit: 1, seed: 1, start: { x: plats[0].x + 5, y: plats[0].y }, endX: 1e9,
+    platforms: plats.map((p, i) => ({ id: i, h: p.kind === 'ground' ? 100 : 14, ch: 0, ...p })),
+    pickups: [], enemies: [], hazards, springs: [], checkpoints: [{ id: 0, x: plats[0].x + 10, y: plats[0].y, platform: 0, ch: 0 }],
+    beacon: null, cues: [], beats: [], water: null,
+  };
+  const g = createGame(lv, { flock: 0 });
+  startRun(g);
+  let jumped = false;
+  for (let i = 0; i < 120 * 6; i++) {
+    if (!jumped && g.mama.onGround && g.mama.x >= xj) { act(g, 'jump'); jumped = true; }
+    step(g, {});
+    if (g.events.length) g.events.length = 0;
+    if (g.status !== 'running' || g.stats.falls || g.stats.hits) return false;
+    if (jumped && g.mama.onGround && done(g)) return true;
+  }
+  return false;
+}
+const iceOf = (p) => (p.ice ? { ice: true } : {});
+/** Seconds (at cruise) of takeoff positions that land on b from a. */
+function simHopWindow(a, b) {
+  const end = a.x + a.w;
+  const plats = [{ kind: a.kind, x: end - 300, y: a.y, w: 300, ...iceOf(a) }, { kind: b.kind, x: b.x, y: b.y, w: Math.min(b.w, 300), ...iceOf(b) }];
+  let n = 0;
+  for (let xj = end - 130; xj <= end + 8; xj += 3) if (simTrial(plats, [], xj, (g) => g.mama.ground.id === 1)) n++;
+  return (3 * n) / C;
+}
+/** Seconds of takeoff positions that clear the (non-cycling) spikes h standing on platform a. */
+function simSpikeWindow(a, h) {
+  const plats = [{ kind: a.kind, x: h.x - 300, y: a.y, w: 300 + h.w + 300, ...iceOf(a) }];
+  let n = 0;
+  for (let xj = h.x - 110; xj <= h.x + 6; xj += 3) if (simTrial(plats, [{ id: 0, kind: 'spikes', x: h.x, y: a.y, w: h.w }], xj, (g) => g.mama.x > h.x + h.w + 25)) n++;
+  return (3 * n) / C;
+}
+
+test('(F) takeoff windows MEASURED in the real sim: every hop >= 0.30 s, every spike >= 0.31 s, and the first landscapes are roomier than the last', { timeout: 300000 }, () => {
+  for (const circuit of [1, 2]) for (const journey of FULL ? [JOURNEY, 7, 31337] : [JOURNEY]) {
+    const lv = levelOf(circuit, journey);
+    const all = main(lv);
+    const st = all.filter((p) => !isDyn(p));
+    const hops = Array.from({ length: 13 }, () => []), spikes = [];
+    for (let i = 0; i + 1 < st.length; i++) {
+      const a = st[i], b = st[i + 1];
+      if (b.x - (a.x + a.w) <= 6) continue;                                                       // contiguous ground (or a step): no gap to jump
+      if (all.some((p) => isDyn(p) && p.x + p.w > a.x + a.w - 5 && p.x < b.x + 5)) continue;      // a lift or mover sits in this gap
+      const w = simHopWindow(a, b);
+      hops[a.ch].push(w);
+      assert.ok(w >= 0.30, `circuit ${circuit} journey ${journey}: the hop at x=${a.x + a.w} (${NAMES[a.ch]}: ${a.kind} -> ${b.kind}, gap ${b.x - a.x - a.w}) has a measured takeoff window of ${w.toFixed(2)} s (>= 0.30)`);
+    }
+    for (const h of lv.hazards) {
+      if (h.cycle) continue;
+      const a = st.find((p) => h.x >= p.x && h.x + h.w <= p.x + p.w);
+      assert.ok(a, `spikes at ${h.x} stand on static main-route ground`);
+      const w = simSpikeWindow(a, h);
+      spikes.push(w);
+      assert.ok(w >= 0.31, `circuit ${circuit} journey ${journey}: spikes ${h.w} u wide at x=${h.x} (${NAMES[a.ch]}) have a measured takeoff window of ${w.toFixed(2)} s (>= 0.31)`);
+    }
+    assert.ok(spikes.length >= 8, 'the world has spikes to measure');
+    const med = (a) => { const s = [...a].sort((p, q) => p - q); return s[s.length >> 1]; };
+    const head = avgOf([0, 1, 2].map((i) => med(hops[i]))), tail = avgOf([10, 11, 12].map((i) => med(hops[i])));
+    assert.ok(head - tail >= 0.05, `circuit ${circuit} journey ${journey}: the median measured hop window shrinks from ${head.toFixed(2)} s (Meadow-Reedwater) to ${tail.toFixed(2)} s (Moonridge-Summit)`);
+  }
+});
